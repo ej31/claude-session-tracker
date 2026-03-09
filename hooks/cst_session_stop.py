@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from cst_github_utils import (
+    _comment_labels,
     _last_active_field_id,
     add_issue_comment,
     cancel_timer,
@@ -93,7 +94,8 @@ def main() -> int:
         try:
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            comment_body = f"**[{timestamp}] 답변**\n\n{last_message}"
+            label = _comment_labels()["response"]
+            comment_body = f"**[{timestamp}] {label}**\n\n{last_message}"
             add_issue_comment(repo, issue_number, comment_body)
             logger.info(f"답변 댓글 저장: {repo}#{issue_number}")
         except Exception as e:

@@ -105,6 +105,20 @@ def _last_active_field_id() -> Optional[str]:
     return os.environ.get("GITHUB_LAST_ACTIVE_FIELD_ID") or None
 
 
+_COMMENT_LABELS = {
+    "en": {"prompt": "Prompt",   "response": "Response"},
+    "ko": {"prompt": "프롬프트", "response": "답변"},
+    "ja": {"prompt": "プロンプト", "response": "回答"},
+    "zh": {"prompt": "提示词",   "response": "回答"},
+}
+
+
+def _comment_labels() -> dict:
+    """설치 시 선택한 언어에 맞는 댓글 레이블 반환"""
+    lang = os.environ.get("CST_LANG", "en")
+    return _COMMENT_LABELS.get(lang, _COMMENT_LABELS["en"])
+
+
 def _project_url() -> Optional[str]:
     """GitHub Project URL (없으면 None)"""
     owner = os.environ.get("GITHUB_PROJECT_OWNER")

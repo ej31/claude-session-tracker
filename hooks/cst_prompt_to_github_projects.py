@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from cst_github_utils import (
+    _comment_labels,
     _last_active_field_id,
     _project_url,
     add_issue_comment,
@@ -121,7 +122,8 @@ def main() -> int:
         try:
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            comment_body = f"**[{timestamp}] 프롬프트**\n\n{prompt_text}"
+            label = _comment_labels()["prompt"]
+            comment_body = f"**[{timestamp}] {label}**\n\n{prompt_text}"
             add_issue_comment(repo, issue_number, comment_body)
             logger.info(f"프롬프트 댓글 저장: {repo}#{issue_number}")
         except Exception as e:

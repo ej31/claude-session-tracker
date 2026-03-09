@@ -155,7 +155,7 @@ function fetchProjectMetadata(owner, number) {
   return { projectId: pv2.id, projectTitle: pv2.title, projectUrl: pv2.url, statusField }
 }
 
-function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId, statusMap, notesRepo, timeoutMinutes, scope, createdFieldId, lastActiveFieldId }) {
+function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId, statusMap, notesRepo, timeoutMinutes, scope, createdFieldId, lastActiveFieldId, lang }) {
   mkdirSync(HOOKS_DIR, { recursive: true })
   mkdirSync(STATE_DIR, { recursive: true })
 
@@ -178,6 +178,7 @@ function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId,
   ]
   if (createdFieldId) configLines.push(`GITHUB_CREATED_FIELD_ID=${createdFieldId}`)
   if (lastActiveFieldId) configLines.push(`GITHUB_LAST_ACTIVE_FIELD_ID=${lastActiveFieldId}`)
+  if (lang) configLines.push(`CST_LANG=${lang}`)
   writeFileSync(CONFIG_FILE, configLines.join('\n') + '\n')
 
   const settingsPath = scope === 'global'
@@ -430,6 +431,7 @@ async function autoSetup(username) {
       scope: 'global',
       createdFieldId,
       lastActiveFieldId,
+      lang,
     })
     installSpin.stop('Hooks installed')
   } catch (e) {
@@ -544,6 +546,17 @@ async function manualSetup(username) {
   })
   if (p.isCancel(scope)) onCancel()
 
+  const langManual = await p.select({
+    message: 'Which language for issue comments?',
+    options: [
+      { value: 'en', label: 'English', hint: 'Prompt, Response' },
+      { value: 'ko', label: 'Korean',  hint: '프롬프트, 답변' },
+      { value: 'ja', label: 'Japanese', hint: 'プロンプト, 回答' },
+      { value: 'zh', label: 'Chinese', hint: '提示词, 回答' },
+    ],
+  })
+  if (p.isCancel(langManual)) onCancel()
+
   // Confirm summary
   const scopeLabel = scope === 'global' ? 'Global' : 'Current project'
   p.note([
@@ -569,6 +582,7 @@ async function manualSetup(username) {
       notesRepo: notesRepo.trim(),
       timeoutMinutes: Number(timeout),
       scope,
+      lang: langManual,
     })
     installSpin.stop('Hooks installed')
   } catch (e) {
