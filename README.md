@@ -2,6 +2,14 @@
 
 Never lose a Claude Code conversation again. Every prompt, every response, every decision automatically saved to GitHub Projects. It's like having a time machine for your coding sessions.
 
+## Install
+
+```bash
+npx claude-session-tracker
+```
+
+Enter. Enter. Enter. Done. Seriously... for real.
+
 ## Results
 
 <p>
@@ -11,14 +19,6 @@ Never lose a Claude Code conversation again. Every prompt, every response, every
 <p>
   <img alt="GitHub Issue with session comments" src="https://github.com/user-attachments/assets/0f8ca148-a5bc-4c08-ac45-93aafc407962" />
 </p>
-
-## Install
-
-```bash
-npx claude-session-tracker
-```
-
-Enter. Enter. Enter. Done. Seriously... for real.
 
 ### Custom date fields
 
