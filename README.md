@@ -17,7 +17,7 @@ npx claude-session-tracker
 
 Enter. Enter. Enter. Done. Seriously... for real.
 
-The wizard asks you like 6 questions:
+The wizard asks you like 6 questions
 1. **GitHub Project Owner** — your username or org
 2. **GitHub Project Number** — grab it from your project URL
 3. **Status mapping** — connect your Project's Status field to our lifecycle stages
@@ -29,7 +29,7 @@ That's it. You're done.
 
 ## What It Does
 
-When you chat with Claude Code, the tracker automatically:
+When you chat with Claude Code, the tracker automatically
 
 - Creates a GitHub Issue for your session
 - Records every prompt you type
@@ -44,7 +44,11 @@ No setup after install. Just use Claude Code like normal. Everything flows to Gi
 
 ## Why?
 
-Claude Code sessions disappear when they end. If you're juggling multiple tasks across projects, it's chaos. What did you decide? What was the discussion? Where did you leave off?
+Claude Code sessions disappear when they end.
+
+If you're juggling multiple tasks across projects, it's chaos.
+
+What did you decide? What was the discussion? Where did you leave off?
 
 **claude-session-tracker** fixes this by making your entire conversation history searchable and shareable on GitHub Projects.
 
@@ -64,7 +68,7 @@ Track everything Claude did, when it did it, and why. Useful for reviews and lea
 
 ## How It Works
 
-Simple flow:
+Simple flow
 
 1. **SessionStart** — Tracker creates a GitHub Issue and adds it to your Project (status: Registered)
 2. **You type a prompt** — Gets saved as a comment, issue title updates, status changes to Responding
@@ -103,7 +107,7 @@ All hooks run async, so tracking never slows you down.
 npx claude-session-tracker uninstall
 ```
 
-Removes everything we installed:
+Removes everything we installed
 - Hook scripts
 - Configuration
 - State files and logs
@@ -128,13 +132,13 @@ Files we install to `~/.claude/hooks/`:
 ## Features
 
 **Session URL notification**
-When a session starts, Claude tells you where it's tracked:
+When a session starts, Claude tells you where it's tracked
 ```
 This session is being tracked at https://github.com/you/repo/issues/42
 ```
 
 **Smart title updates**
-Issue title auto-updates with your latest prompt:
+Issue title auto-updates with your latest prompt
 ```
 [project-name] your latest prompt here...
 ```
@@ -157,7 +161,7 @@ Edit `~/.claude/hooks/config.env` directly, or just re-run the installer:
 npx claude-session-tracker
 ```
 
-Config file format:
+Config file format
 ```env
 GITHUB_PROJECT_OWNER=your-username
 GITHUB_PROJECT_NUMBER=1
