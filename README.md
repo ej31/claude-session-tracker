@@ -174,7 +174,7 @@ All hooks run async. Tracking never slows down Claude.
 
 ## Configuration
 
-Edit `~/.claude/hooks/config.env` directly, or just re-run the installer:
+Edit `~/.claude/hooks/config.env` directly, or just re-run the installer
 
 ```bash
 npx claude-session-tracker
@@ -198,7 +198,7 @@ DONE_TIMEOUT_SECS=1800
 
 **Async hook completion messages appearing in Claude Code**
 
-You may see messages like this after every prompt/response:
+You may see messages like this after every prompt/response
 ```
 ⎿  Async hook UserPromptSubmit completed
 ⎿  Async hook Stop completed
