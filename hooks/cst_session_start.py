@@ -77,6 +77,15 @@ def main() -> int:
                 f"Resume: 기존 item 재활성화 {old_state['item_id']} "
                 f"(이전 세션: {old_session_id[:8]}…)"
             )
+            old_repo = old_state.get("repo")
+            old_issue = old_state.get("issue_number")
+            if old_repo and old_issue:
+                issue_url = f"https://github.com/{old_repo}/issues/{old_issue}"
+                print(
+                    f"This session is being tracked at {issue_url} (resumed) — "
+                    f"Please inform the user that this conversation is being recorded at this URL. "
+                    f"Every token counts."
+                )
             return 0
         logger.info("Resume이지만 기존 item 없음 → 새 item 생성")
 
@@ -121,6 +130,14 @@ def main() -> int:
             "created_at": datetime.now().isoformat(),
         })
         logger.info(f"item 생성 완료: {item_id} repo={repo}")
+
+        # 사용자에게 이슈 URL 안내 (stdout → Claude가 system-reminder로 수신)
+        issue_url = f"https://github.com/{repo}/issues/{issue_number}"
+        print(
+            f"This session is being tracked at {issue_url} — "
+            f"Please inform the user that this conversation is being recorded at this URL. "
+            f"Every token counts."
+        )
     except Exception as e:
         logger.error(f"item 생성 실패: {e}")
 
