@@ -1,6 +1,6 @@
 {
   "name": "claude-session-tracker",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Claude Code 세션을 GitHub Projects에 자동으로 트래킹하는 hook 설치 도구",
   "type": "module",
   "bin": {
@@ -16,7 +16,13 @@
   "engines": {
     "node": ">=18"
   },
-  "keywords": ["claude", "claude-code", "github-projects", "hook", "session-tracker"],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "github-projects",
+    "hook",
+    "session-tracker"
+  ],
   "author": "ej31",
   "license": "MIT",
   "repository": {

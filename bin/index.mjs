@@ -3,7 +3,7 @@ import * as p from '@clack/prompts'
 import { execSync, spawnSync } from 'node:child_process'
 import {
   mkdirSync, writeFileSync, readFileSync,
-  existsSync, copyFileSync, chmodSync,
+  existsSync, copyFileSync, chmodSync, unlinkSync, rmSync,
 } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
@@ -71,9 +71,88 @@ function mergeHooks(existing, hooksDir) {
   }
 }
 
+// ── 우리가 등록하는 훅 키 목록 ───────────────────────────────────────────────
+
+const OUR_HOOK_KEYS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionEnd']
+
+function removeOurHooks(settings) {
+  if (!settings.hooks) return settings
+  const cleaned = { ...settings, hooks: { ...settings.hooks } }
+  for (const key of OUR_HOOK_KEYS) {
+    const entries = cleaned.hooks[key]
+    if (!Array.isArray(entries)) continue
+    // 우리 스크립트 경로가 포함된 항목만 제거
+    cleaned.hooks[key] = entries.filter(entry => {
+      const cmds = entry.hooks ?? []
+      return !cmds.some(h => PY_FILES.some(f => h.command?.includes(f)))
+    })
+    if (cleaned.hooks[key].length === 0) delete cleaned.hooks[key]
+  }
+  if (Object.keys(cleaned.hooks).length === 0) delete cleaned.hooks
+  return cleaned
+}
+
+// ── uninstall ────────────────────────────────────────────────────────────────
+
+async function uninstall() {
+  console.clear()
+  p.intro(' Claude Session Tracker 제거 ')
+
+  const confirmed = await p.confirm({ message: '설치된 훅과 설정을 제거할까요?' })
+  if (!confirmed) { p.cancel('제거 취소'); process.exit(0) }
+
+  const spin = p.spinner()
+  spin.start('제거 중…')
+
+  let removed = 0
+
+  // 1. Python 스크립트 제거
+  for (const f of PY_FILES) {
+    const target = join(HOOKS_DIR, f)
+    if (existsSync(target)) { unlinkSync(target); removed++ }
+  }
+
+  // 2. config.env 제거
+  if (existsSync(CONFIG_FILE)) { unlinkSync(CONFIG_FILE); removed++ }
+
+  // 3. hooks.log 제거
+  const logFile = join(HOOKS_DIR, 'hooks.log')
+  if (existsSync(logFile)) { unlinkSync(logFile); removed++ }
+
+  // 4. state 디렉토리 제거
+  if (existsSync(STATE_DIR)) { rmSync(STATE_DIR, { recursive: true }); removed++ }
+
+  // 5. settings.json에서 훅 항목 제거 (전역 + 프로젝트)
+  const settingsPaths = [
+    join(HOME, '.claude', 'settings.json'),
+    join(process.cwd(), '.claude', 'settings.json'),
+  ]
+  for (const sp of settingsPaths) {
+    if (!existsSync(sp)) continue
+    const original = readJson(sp)
+    if (!original.hooks) continue
+    const cleaned = removeOurHooks(original)
+    writeFileSync(sp, JSON.stringify(cleaned, null, 2) + '\n')
+    removed++
+  }
+
+  spin.stop(`제거 완료 (${removed}개 항목)`)
+
+  p.note([
+    'Python 스크립트, config.env, state, 로그가 삭제되었습니다.',
+    'settings.json에서 관련 훅 항목이 제거되었습니다.',
+    '',
+    'Claude Code를 재시작하면 적용됩니다.',
+  ].join('\n'), '제거 완료')
+
+  p.outro('세션 트래킹이 비활성화되었습니다.')
+}
+
 // ── 메인 ──────────────────────────────────────────────────────────────────────
 
 async function main() {
+  if (process.argv.includes('uninstall')) return uninstall()
+
   console.clear()
   p.intro(' Claude Session Tracker 설치 ')
 
