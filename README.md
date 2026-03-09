@@ -20,6 +20,18 @@ npx claude-session-tracker
 
 Enter. Enter. Enter. Done. Seriously... for real.
 
+### Custom date fields
+
+Auto setup creates two custom date fields in your project `Created` (set when a session starts) and `Last Active` (updated on every prompt).
+
+However the GitHub API doesn't support modifying project views programmatically, so you'll need to manually add these fields to your board view.
+
+Go to your project → open any view → click `+` to add a field.
+
+<img width="80%" alt="image" src="https://github.com/user-attachments/assets/c5cc4d4e-6f1f-4847-a901-9098af1db852" />
+
+### Custom Setup
+
 The wizard asks you like 6 questions
 1. **GitHub Project Owner** — your username or org
 2. **GitHub Project Number** — grab it from your project URL
@@ -28,7 +40,8 @@ The wizard asks you like 6 questions
 5. **Idle timeout** — how long before we auto-close (default: 30 mins)
 6. **Scope** — this project only, or go global
 
-That's it. You're done.
+That's it.
+
 
 ## What It Does
 
@@ -148,24 +161,15 @@ Issue title auto-updates with your latest prompt
 Long project names get truncated at 20 chars.
 
 **Resume without duplicates**
+
 Resume a session with `claude --resume`? Tracker reuses the same GitHub Issue instead of creating a new one.
 
 **Git remote auto-detection**
+
 Has a GitHub remote? We use it for the issue title prefix. Issues always land in your configured storage repo.
 
-**Custom date fields**
-Auto setup creates two custom date fields in your project
-
-`Created` (set when a session starts) and `Last Active` (updated on every prompt).
-
-However the GitHub API doesn't support modifying project views programmatically, so you'll need to manually add these fields to your board view.
-
-Go to your project → open any view → click `+` to add a field.
-
-<img width="80%" alt="image" src="https://github.com/user-attachments/assets/c5cc4d4e-6f1f-4847-a901-9098af1db852" />
-
-
 **Zero blocking**
+
 All hooks run async. Tracking never slows down Claude.
 
 ## Configuration
