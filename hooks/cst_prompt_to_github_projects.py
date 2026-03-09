@@ -15,6 +15,7 @@ from cst_github_utils import (
     _last_active_field_id,
     add_issue_comment,
     cancel_timer,
+    get_git_repo,
     load_env_file,
     load_state,
     save_state,
@@ -87,10 +88,17 @@ def main() -> int:
     issue_number = state.get("issue_number")
     if repo and issue_number and prompt_text:
         try:
-            project_name = Path(state.get("cwd", "")).name
-            if len(project_name) > 20:
-                project_name = project_name[:20] + "..."
-            title = f"[{project_name}] {prompt_text}"[:80]
+            cwd = state.get("cwd", "")
+            git_repo = get_git_repo(cwd) if cwd else None
+            if git_repo:
+                # GitHub repo인 경우: [owner/repo] 형식
+                prefix = git_repo
+            else:
+                # git repo가 아닌 경우: 폴더 이름
+                prefix = Path(cwd).name
+            if len(prefix) > 30:
+                prefix = prefix[:30] + "..."
+            title = f"[{prefix}] {prompt_text}"[:80]
             update_issue_title(repo, issue_number, title)
             logger.info(f"이슈 제목 업데이트: {title}")
         except Exception as e:
