@@ -51,21 +51,21 @@ function mergeHooks(existing, hooksDir) {
     hooks: {
       ...(existing.hooks ?? {}),
       SessionStart: [{
-        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'session_start.py')}`, timeout: 15 }],
+        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'session_start.py')}`, timeout: 15, async: true }],
       }],
       UserPromptSubmit: [{
         matcher: '',
-        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'prompt_to_github_projects.py')}`, timeout: 15 }],
+        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'prompt_to_github_projects.py')}`, timeout: 15, async: true }],
       }],
       PostToolUse: [{
         matcher: 'AskUserQuestion',
-        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'post_tool_use.py')}`, timeout: 15 }],
+        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'post_tool_use.py')}`, timeout: 15, async: true }],
       }],
       Stop: [{
-        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'session_stop.py')}`, timeout: 10 }],
+        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'session_stop.py')}`, timeout: 10, async: true }],
       }],
       SessionEnd: [{
-        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'session_stop.py')}`, timeout: 10 }],
+        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'session_stop.py')}`, timeout: 10, async: true }],
       }],
     },
   }
