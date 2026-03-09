@@ -86,8 +86,16 @@ All hooks run async, so tracking never slows you down.
 
 - Node.js 18+
 - Python 3
-- GitHub CLI (`gh`) — run `gh auth login` first
-- A GitHub Project (v2) with a Status field
+- **GitHub CLI (`gh`) — REQUIRED.** Install it from https://cli.github.com. The tracker won't work without it.
+  ```bash
+  # Install (macOS)
+  brew install gh
+
+  # Login and set required scopes
+  gh auth login --scopes "project,repo"
+  ```
+  Needs `project` (read/write GitHub Projects) and `repo` (create issues, comments) scopes.
+- A GitHub Project (v2) with a Status field (auto setup creates one for you)
 
 ## Uninstall
 
