@@ -2,6 +2,12 @@
 
 Automatically track your Claude Code sessions in GitHub Projects. Every prompt, every response, every decision — recorded as GitHub Issue comments, so you never lose context.
 
+
+## Result
+<img width="1749" height="718" alt="image" src="https://github.com/user-attachments/assets/0705f26d-9517-4186-9533-217a166bd177" />
+<img width="1728" height="1079" alt="image" src="https://github.com/user-attachments/assets/b0839c8f-c082-4f06-90a2-d1c29d37d30f" />
+
+
 ## Why?
 
 Claude Code sessions are ephemeral. When a session ends, the conversation disappears. If you're working on multiple tasks across projects, it's hard to remember what happened, what was decided, and what's still pending.
