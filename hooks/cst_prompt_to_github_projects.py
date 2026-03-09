@@ -39,7 +39,19 @@ def main() -> int:
     session_id = input_data.get("session_id", "unknown")
     prompt_text = input_data.get("prompt", "").strip()
 
-    state = load_state(session_id)
+    # SessionStart(async)가 아직 완료되지 않았을 수 있으므로 재시도
+    import time
+
+    state = None
+    max_retries = 5
+    for attempt in range(max_retries):
+        state = load_state(session_id)
+        if state:
+            break
+        if attempt < max_retries - 1:
+            logger.info(f"상태 파일 대기 중: {session_id[:8]}… (시도 {attempt + 1}/{max_retries})")
+            time.sleep(1)
+
     if not state:
         logger.warning(f"상태 파일 없음: {session_id[:8]}… (SessionStart hook 확인 필요)")
         return 0
