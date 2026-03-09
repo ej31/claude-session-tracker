@@ -397,17 +397,22 @@ async function autoSetup(username) {
 
     const createdRes = ghGraphql(dateFieldMutation, { projectId, name: 'Created' })
     createdFieldId = createdRes.data?.createProjectV2Field?.projectV2Field?.id
-    if (!createdFieldId) throw new Error('Failed to create "Created" date field. Unexpected response.')
+    if (!createdFieldId) {
+      const errMsg = createdRes.errors?.map(e => e.message).join(', ') || JSON.stringify(createdRes)
+      throw new Error(`Failed to create "Created" date field: ${errMsg}`)
+    }
 
     const lastActiveRes = ghGraphql(dateFieldMutation, { projectId, name: 'Last Active' })
     lastActiveFieldId = lastActiveRes.data?.createProjectV2Field?.projectV2Field?.id
-    if (!lastActiveFieldId) throw new Error('Failed to create "Last Active" date field. Unexpected response.')
+    if (!lastActiveFieldId) {
+      const errMsg = lastActiveRes.errors?.map(e => e.message).join(', ') || JSON.stringify(lastActiveRes)
+      throw new Error(`Failed to create "Last Active" date field: ${errMsg}`)
+    }
 
     dateFieldSpin.stop('Custom date fields created')
   } catch (e) {
-    dateFieldSpin.stop('Failed to create custom date fields')
-    p.log.error(e.message)
-    process.exit(1)
+    dateFieldSpin.stop('Skipped custom date fields (non-critical)')
+    p.log.warn(`Date fields could not be created: ${e.message}\n  This is optional — setup will continue without them.`)
   }
 
   // Step 5: Install hooks
