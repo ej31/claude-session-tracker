@@ -4,8 +4,11 @@ Automatically track your Claude Code sessions in GitHub Projects. Every prompt, 
 
 
 ## Result
-<img width="1749" height="718" alt="image" src="https://github.com/user-attachments/assets/0705f26d-9517-4186-9533-217a166bd177" />
-<img width="1728" height="1079" alt="image" src="https://github.com/user-attachments/assets/b0839c8f-c082-4f06-90a2-d1c29d37d30f" />
+
+<p>
+  <img width="49%" alt="GitHub Projects board view" src="https://github.com/user-attachments/assets/0705f26d-9517-4186-9533-217a166bd177" />
+  <img width="49%" alt="GitHub Issue with session comments" src="https://github.com/user-attachments/assets/b0839c8f-c082-4f06-90a2-d1c29d37d30f" />
+</p>
 
 
 ## Why?
@@ -23,33 +26,38 @@ Claude Code sessions are ephemeral. When a session ends, the conversation disapp
 
 ## How It Works
 
-```
-You type a prompt
-     │
-     ▼
-┌─────────────────────────────┐
-│  UserPromptSubmit hook      │
-│  • Status → "Responding"    │
-│  • Save prompt as comment   │
-│  • Update issue title       │
-└─────────────────────────────┘
-     │
-     ▼
-Claude responds
-     │
-     ▼
-┌─────────────────────────────┐
-│  Stop hook                  │
-│  • Status → "Waiting"       │
-│  • Save response as comment │
-│  • Start idle timer         │
-└─────────────────────────────┘
-     │
-     ▼ (no input for 30 min)
-┌─────────────────────────────┐
-│  Timer expires              │
-│  • Status → "Closed"        │
-└─────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant C as Claude Code
+    participant H as Hooks
+    participant G as GitHub
+
+    U->>C: Start session
+    C->>H: SessionStart
+    H->>G: Create Issue + Add to Project
+    G-->>H: Issue URL
+    H-->>C: "This session is tracked at URL"
+    C-->>U: Session tracking notification
+
+    U->>C: Type prompt
+    C->>H: UserPromptSubmit
+    H->>G: Status → Responding
+    H->>G: Save prompt as comment
+    H->>G: Update issue title
+
+    C-->>U: Response
+    C->>H: Stop
+    H->>G: Status → Waiting
+    H->>G: Save response as comment
+    H->>H: Start idle timer (30 min)
+
+    alt No input for 30 min
+        H->>G: Status → Closed
+    else User sends new prompt
+        U->>C: Type prompt
+        C->>H: UserPromptSubmit (cancel timer)
+    end
 ```
 
 | Claude Code Event | GitHub Projects Status | Action |
