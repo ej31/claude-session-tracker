@@ -95,6 +95,16 @@ def _status_option(name: str) -> str:
     return _require(key_map[name])
 
 
+def _created_field_id() -> Optional[str]:
+    """Created 필드 ID (없으면 None — 선택 기능)"""
+    return os.environ.get("GITHUB_CREATED_FIELD_ID") or None
+
+
+def _last_active_field_id() -> Optional[str]:
+    """Last Active 필드 ID (없으면 None — 선택 기능)"""
+    return os.environ.get("GITHUB_LAST_ACTIVE_FIELD_ID") or None
+
+
 def _done_timeout() -> int:
     return int(os.environ.get("DONE_TIMEOUT_SECS", "1800"))
 
@@ -168,6 +178,28 @@ def set_item_status(item_id: str, status_name: str) -> None:
         "itemId": item_id,
         "fieldId": _status_field_id(),
         "optionId": _status_option(status_name),
+    })
+
+
+def set_item_date_field(item_id: str, field_id: str, date_str: str) -> None:
+    """Projects v2 item의 DATE 필드 값 설정 (YYYY-MM-DD 형식)"""
+    mutation = """
+    mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $date: Date!) {
+      updateProjectV2ItemFieldValue(input: {
+        projectId: $projectId
+        itemId: $itemId
+        fieldId: $fieldId
+        value: { date: $date }
+      }) {
+        projectV2Item { id }
+      }
+    }
+    """
+    graphql_request(mutation, {
+        "projectId": _project_id(),
+        "itemId": item_id,
+        "fieldId": field_id,
+        "date": date_str,
     })
 
 

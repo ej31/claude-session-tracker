@@ -155,7 +155,7 @@ function fetchProjectMetadata(owner, number) {
   return { projectId: pv2.id, projectTitle: pv2.title, projectUrl: pv2.url, statusField }
 }
 
-function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId, statusMap, notesRepo, timeoutMinutes, scope }) {
+function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId, statusMap, notesRepo, timeoutMinutes, scope, createdFieldId, lastActiveFieldId }) {
   mkdirSync(HOOKS_DIR, { recursive: true })
   mkdirSync(STATE_DIR, { recursive: true })
 
@@ -164,7 +164,7 @@ function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId,
     chmodSync(join(HOOKS_DIR, f), 0o755)
   }
 
-  writeFileSync(CONFIG_FILE, [
+  const configLines = [
     `GITHUB_PROJECT_OWNER=${owner}`,
     `GITHUB_PROJECT_NUMBER=${projectNumber}`,
     `GITHUB_PROJECT_ID=${projectId}`,
@@ -175,7 +175,10 @@ function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId,
     `GITHUB_STATUS_CLOSED=${statusMap.closed}`,
     `NOTES_REPO=${notesRepo}`,
     `DONE_TIMEOUT_SECS=${Number(timeoutMinutes) * 60}`,
-  ].join('\n') + '\n')
+  ]
+  if (createdFieldId) configLines.push(`GITHUB_CREATED_FIELD_ID=${createdFieldId}`)
+  if (lastActiveFieldId) configLines.push(`GITHUB_LAST_ACTIVE_FIELD_ID=${lastActiveFieldId}`)
+  writeFileSync(CONFIG_FILE, configLines.join('\n') + '\n')
 
   const settingsPath = scope === 'global'
     ? join(HOME, '.claude', 'settings.json')
@@ -268,6 +271,7 @@ async function autoSetup(username) {
     `  Repository : ${repoFullName} (private)`,
     `  Project    : ${projectTitle}`,
     `  Statuses   : ${labels.registered}, ${labels.responding}, ${labels.waiting}, ${labels.closed}`,
+    `  Date fields : Created, Last Active`,
     `  Scope      : Global`,
     `  Timeout    : 30 min`,
   ].join('\n'), 'Setup plan')
@@ -368,6 +372,42 @@ async function autoSetup(username) {
     process.exit(1)
   }
 
+  // Step 4.5: Create custom date fields
+  const dateFieldSpin = p.spinner()
+  dateFieldSpin.start('Creating custom date fields...')
+  let createdFieldId, lastActiveFieldId
+  try {
+    const dateFieldMutation = `
+      mutation($projectId: ID!, $name: String!) {
+        createProjectV2Field(input: {
+          projectId: $projectId
+          name: $name
+          dataType: DATE
+        }) {
+          projectV2Field {
+            ... on ProjectV2Field {
+              id
+              name
+            }
+          }
+        }
+      }`
+
+    const createdRes = ghGraphql(dateFieldMutation, { projectId, name: 'Created' })
+    createdFieldId = createdRes.data?.createProjectV2Field?.projectV2Field?.id
+    if (!createdFieldId) throw new Error('Failed to create "Created" date field. Unexpected response.')
+
+    const lastActiveRes = ghGraphql(dateFieldMutation, { projectId, name: 'Last Active' })
+    lastActiveFieldId = lastActiveRes.data?.createProjectV2Field?.projectV2Field?.id
+    if (!lastActiveFieldId) throw new Error('Failed to create "Last Active" date field. Unexpected response.')
+
+    dateFieldSpin.stop('Custom date fields created')
+  } catch (e) {
+    dateFieldSpin.stop('Failed to create custom date fields')
+    p.log.error(e.message)
+    process.exit(1)
+  }
+
   // Step 5: Install hooks
   const installSpin = p.spinner()
   installSpin.start('Installing hooks...')
@@ -381,6 +421,8 @@ async function autoSetup(username) {
       notesRepo: repoFullName,
       timeoutMinutes: 30,
       scope: 'global',
+      createdFieldId,
+      lastActiveFieldId,
     })
     installSpin.stop('Hooks installed')
   } catch (e) {

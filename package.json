@@ -1,6 +1,6 @@
 {
   "name": "claude-session-tracker",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Claude Code 세션을 GitHub Projects에 자동으로 트래킹하는 hook 설치 도구",
   "type": "module",
   "bin": {

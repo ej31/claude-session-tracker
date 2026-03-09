@@ -14,11 +14,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from cst_github_utils import (
+    _last_active_field_id,
     add_issue_comment,
     cancel_timer,
     load_env_file,
     load_state,
     save_state,
+    set_item_date_field,
     set_item_status,
     setup_logger,
 )
@@ -72,6 +74,16 @@ def main() -> int:
         )
     except Exception as e:
         logger.error(f"상태 변경 실패: {e}")
+
+    # Last Active 날짜 갱신
+    last_active_fid = _last_active_field_id()
+    if last_active_fid and item_id:
+        try:
+            from datetime import datetime
+            today = datetime.now().strftime("%Y-%m-%d")
+            set_item_date_field(item_id, last_active_fid, today)
+        except Exception as e:
+            logger.error(f"Last Active 필드 갱신 실패: {e}")
 
     # 답변을 이슈 댓글로 저장
     last_message = input_data.get("last_assistant_message", "").strip()

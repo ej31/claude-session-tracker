@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from cst_github_utils import (
+    _created_field_id,
     _notes_repo,
     cancel_timer,
     create_repo_issue_and_add_to_project,
@@ -24,6 +25,7 @@ from cst_github_utils import (
     load_env_file,
     load_state,
     save_state,
+    set_item_date_field,
     set_item_status,
     setup_logger,
 )
@@ -130,6 +132,16 @@ def main() -> int:
             "created_at": datetime.now().isoformat(),
         })
         logger.info(f"item 생성 완료: {item_id} repo={repo}")
+
+        # Created 날짜 설정
+        created_fid = _created_field_id()
+        if created_fid and item_id:
+            try:
+                today = datetime.now().strftime("%Y-%m-%d")
+                set_item_date_field(item_id, created_fid, today)
+                logger.info(f"Created 필드 설정: {today}")
+            except Exception as e:
+                logger.error(f"Created 필드 설정 실패: {e}")
 
         # 사용자에게 이슈 URL 안내 (stdout → Claude가 system-reminder로 수신)
         issue_url = f"https://github.com/{repo}/issues/{issue_number}"
