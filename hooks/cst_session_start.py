@@ -103,22 +103,20 @@ def main() -> int:
         f"**Transcript:** `{transcript_path}`  \n"
     )
 
-    repo = get_git_repo(cwd)
+    git_repo = get_git_repo(cwd)  # 제목 prefix용 (이슈 생성 위치와 무관)
     item_id = None
     issue_number = None
 
     try:
         notes_repo = _notes_repo()
-        target_repo = repo if repo else notes_repo
-        if not repo:
-            logger.info(f"git remote 없음 → {notes_repo}에 Issue 생성")
+        # 이슈는 항상 notes_repo에 생성, git_repo는 제목 prefix에만 사용
+        if git_repo:
+            logger.info(f"GitHub repo 감지: {git_repo} → {notes_repo}에 Issue 생성")
         else:
-            logger.info(f"GitHub repo 감지: {repo} → Issue 생성")
+            logger.info(f"git remote 없음 → {notes_repo}에 Issue 생성")
         item_id, issue_number = create_repo_issue_and_add_to_project(
-            target_repo, title, body
+            notes_repo, title, body
         )
-        if not repo:
-            repo = notes_repo
 
         set_item_status(item_id, "registered")
 
@@ -126,7 +124,7 @@ def main() -> int:
             "session_id": session_id,
             "item_id": item_id,
             "cwd": cwd,
-            "repo": repo,
+            "repo": notes_repo,
             "issue_number": issue_number,
             "status": "registered",
             "created_at": datetime.now().isoformat(),
