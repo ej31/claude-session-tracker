@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from cst_github_utils import (
     _last_active_field_id,
+    _project_url,
     add_issue_comment,
     cancel_timer,
     get_git_repo,
@@ -60,6 +61,17 @@ def main() -> int:
     item_id = state.get("item_id")
     if not item_id:
         return 0
+
+    # 첫 프롬프트 시 GitHub Project URL 안내
+    if not state.get("first_prompt_notified"):
+        project_url = _project_url()
+        if project_url:
+            print(
+                f"현재 이 대화는 {project_url} 에 기록되고 있습니다. "
+                f"Please inform the user of this tracking URL naturally at the start of your response."
+            )
+        state["first_prompt_notified"] = True
+        save_state(session_id, state)
 
     try:
         # 예약된 타이머 취소 (아직 응답 처리 중)

@@ -105,6 +105,15 @@ def _last_active_field_id() -> Optional[str]:
     return os.environ.get("GITHUB_LAST_ACTIVE_FIELD_ID") or None
 
 
+def _project_url() -> Optional[str]:
+    """GitHub Project URL (없으면 None)"""
+    owner = os.environ.get("GITHUB_PROJECT_OWNER")
+    number = os.environ.get("GITHUB_PROJECT_NUMBER")
+    if not owner or not number:
+        return None
+    return f"https://github.com/users/{owner}/projects/{number}"
+
+
 def _done_timeout() -> int:
     return int(os.environ.get("DONE_TIMEOUT_SECS", "1800"))
 
