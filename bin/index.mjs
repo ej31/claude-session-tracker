@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import * as p from '@clack/prompts'
-import { execSync, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import {
   mkdirSync, writeFileSync, readFileSync,
   existsSync, copyFileSync, chmodSync, unlinkSync, rmSync,
@@ -23,7 +24,6 @@ const PY_FILES = [
   'cst_mark_done.py',
   'cst_post_tool_use.py',
 ]
-// v1.0.3 이하 하위 호환용 (uninstall 시 레거시 파일도 정리)
 const LEGACY_PY_FILES = [
   'github_utils.py',
   'session_start.py',
@@ -32,12 +32,29 @@ const LEGACY_PY_FILES = [
   'mark_done.py',
   'post_tool_use.py',
 ]
+const ALL_KNOWN_FILES = [...PY_FILES, ...LEGACY_PY_FILES]
+const OUR_HOOK_KEYS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionEnd']
 
-// ── 유틸 ──────────────────────────────────────────────────────────────────────
+const STATUS_LABELS = {
+  en: { registered: 'Registered', responding: 'Responding', waiting: 'Waiting', closed: 'Closed' },
+  ko: { registered: '세션 등록', responding: '답변 중', waiting: '입력 대기', closed: '세션 종료' },
+  ja: { registered: 'セッション登録', responding: '応答中', waiting: '入力待ち', closed: 'セッション終了' },
+  zh: { registered: '会话注册', responding: '响应中', waiting: '等待输入', closed: '会话关闭' },
+}
+
+const STATUS_COLORS = ['BLUE', 'GREEN', 'YELLOW', 'GRAY']
+const STATUS_DESCRIPTIONS = ['Session started', 'Claude is responding', 'Waiting for user input', 'Session ended']
+
+// -- Utilities ----------------------------------------------------------------
+
+function onCancel() {
+  p.cancel('Setup cancelled.')
+  process.exit(0)
+}
 
 function hasCmd(cmd) {
-  try { execSync(`which ${cmd}`, { stdio: 'ignore' }); return true }
-  catch { return false }
+  const result = spawnSync('which', [cmd], { stdio: 'ignore' })
+  return result.status === 0
 }
 
 function ghGraphql(query, variables = {}) {
@@ -45,8 +62,16 @@ function ghGraphql(query, variables = {}) {
     'gh', ['api', 'graphql', '--input', '-'],
     { input: JSON.stringify({ query, variables }), encoding: 'utf-8' },
   )
-  if (!result.stdout?.trim()) throw new Error(result.stderr || 'gh api 응답 없음')
+  if (!result.stdout?.trim()) throw new Error(result.stderr || 'No response from gh api')
   return JSON.parse(result.stdout)
+}
+
+function ghCommand(args) {
+  const result = spawnSync('gh', args, { encoding: 'utf-8' })
+  if (result.status !== 0) {
+    throw new Error(result.stderr?.trim() || `gh command failed: gh ${args.join(' ')}`)
+  }
+  return result.stdout?.trim() ?? ''
 }
 
 function readJson(path) {
@@ -80,19 +105,12 @@ function mergeHooks(existing, hooksDir) {
   }
 }
 
-// ── 우리가 등록하는 훅 키 목록 ───────────────────────────────────────────────
-
-const OUR_HOOK_KEYS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionEnd']
-
-const ALL_KNOWN_FILES = [...PY_FILES, ...LEGACY_PY_FILES]
-
 function removeOurHooks(settings) {
   if (!settings.hooks) return settings
   const cleaned = { ...settings, hooks: { ...settings.hooks } }
   for (const key of OUR_HOOK_KEYS) {
     const entries = cleaned.hooks[key]
     if (!Array.isArray(entries)) continue
-    // 현재 + 레거시 파일명 모두 매칭하여 제거
     cleaned.hooks[key] = entries.filter(entry => {
       const cmds = entry.hooks ?? []
       return !cmds.some(h => ALL_KNOWN_FILES.some(f => h.command?.includes(f)))
@@ -103,37 +121,101 @@ function removeOurHooks(settings) {
   return cleaned
 }
 
-// ── uninstall ────────────────────────────────────────────────────────────────
+function getAuthenticatedUser() {
+  const result = spawnSync('gh', ['api', 'user', '--jq', '.login'], { encoding: 'utf-8' })
+  if (result.status !== 0 || !result.stdout?.trim()) return null
+  return result.stdout.trim()
+}
+
+function fetchProjectMetadata(owner, number) {
+  const query = `
+    query($login: String!, $number: Int!) {
+      user(login: $login) {
+        projectV2(number: $number) {
+          id title url
+          fields(first: 30) {
+            nodes { ... on ProjectV2SingleSelectField { id name options { id name } } }
+          }
+        }
+      }
+      organization(login: $login) {
+        projectV2(number: $number) {
+          id title url
+          fields(first: 30) {
+            nodes { ... on ProjectV2SingleSelectField { id name options { id name } } }
+          }
+        }
+      }
+    }`
+  const res = ghGraphql(query, { login: owner, number })
+  const pv2 = res.data?.user?.projectV2 ?? res.data?.organization?.projectV2
+  if (!pv2) throw new Error('Could not find the project. Please check the owner and project number.')
+  const statusField = pv2.fields.nodes.find(n => n?.name === 'Status')
+  if (!statusField) throw new Error("Could not find a 'Status' field in this project.")
+  return { projectId: pv2.id, projectTitle: pv2.title, projectUrl: pv2.url, statusField }
+}
+
+function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId, statusMap, notesRepo, timeoutMinutes, scope }) {
+  mkdirSync(HOOKS_DIR, { recursive: true })
+  mkdirSync(STATE_DIR, { recursive: true })
+
+  for (const f of PY_FILES) {
+    copyFileSync(join(HOOKS_SRC, f), join(HOOKS_DIR, f))
+    chmodSync(join(HOOKS_DIR, f), 0o755)
+  }
+
+  writeFileSync(CONFIG_FILE, [
+    `GITHUB_PROJECT_OWNER=${owner}`,
+    `GITHUB_PROJECT_NUMBER=${projectNumber}`,
+    `GITHUB_PROJECT_ID=${projectId}`,
+    `GITHUB_STATUS_FIELD_ID=${statusFieldId}`,
+    `GITHUB_STATUS_REGISTERED=${statusMap.registered}`,
+    `GITHUB_STATUS_RESPONDING=${statusMap.responding}`,
+    `GITHUB_STATUS_WAITING=${statusMap.waiting}`,
+    `GITHUB_STATUS_CLOSED=${statusMap.closed}`,
+    `NOTES_REPO=${notesRepo}`,
+    `DONE_TIMEOUT_SECS=${Number(timeoutMinutes) * 60}`,
+  ].join('\n') + '\n')
+
+  const settingsPath = scope === 'global'
+    ? join(HOME, '.claude', 'settings.json')
+    : (() => {
+        mkdirSync(join(process.cwd(), '.claude'), { recursive: true })
+        return join(process.cwd(), '.claude', 'settings.json')
+      })()
+
+  writeFileSync(
+    settingsPath,
+    JSON.stringify(mergeHooks(readJson(settingsPath), HOOKS_DIR), null, 2) + '\n',
+  )
+}
+
+// -- Uninstall ----------------------------------------------------------------
 
 async function uninstall() {
   console.clear()
-  p.intro(' Claude Session Tracker 제거 ')
+  p.intro(' Claude Session Tracker — Uninstall ')
 
-  const confirmed = await p.confirm({ message: '설치된 훅과 설정을 제거할까요?' })
-  if (!confirmed) { p.cancel('제거 취소'); process.exit(0) }
+  const confirmed = await p.confirm({ message: 'Remove all installed hooks and configuration?' })
+  if (p.isCancel(confirmed) || !confirmed) { p.cancel('Uninstall cancelled.'); process.exit(0) }
 
   const spin = p.spinner()
-  spin.start('제거 중…')
+  spin.start('Removing...')
 
   let removed = 0
 
-  // 1. Python 스크립트 제거 (현재 + 레거시)
   for (const f of ALL_KNOWN_FILES) {
     const target = join(HOOKS_DIR, f)
     if (existsSync(target)) { unlinkSync(target); removed++ }
   }
 
-  // 2. config.env 제거
   if (existsSync(CONFIG_FILE)) { unlinkSync(CONFIG_FILE); removed++ }
 
-  // 3. hooks.log 제거
   const logFile = join(HOOKS_DIR, 'hooks.log')
   if (existsSync(logFile)) { unlinkSync(logFile); removed++ }
 
-  // 4. state 디렉토리 제거
   if (existsSync(STATE_DIR)) { rmSync(STATE_DIR, { recursive: true }); removed++ }
 
-  // 5. settings.json에서 훅 항목 제거 (전역 + 프로젝트)
   const settingsPaths = [
     join(HOME, '.claude', 'settings.json'),
     join(process.cwd(), '.claude', 'settings.json'),
@@ -147,207 +229,373 @@ async function uninstall() {
     removed++
   }
 
-  spin.stop(`제거 완료 (${removed}개 항목)`)
+  spin.stop(`Removal complete (${removed} items)`)
 
   p.note([
-    'Python 스크립트, config.env, state, 로그가 삭제되었습니다.',
-    'settings.json에서 관련 훅 항목이 제거되었습니다.',
+    'Python scripts, config.env, state, and logs have been deleted.',
+    'Hook entries have been removed from settings.json.',
     '',
-    'Claude Code를 재시작하면 적용됩니다.',
-  ].join('\n'), '제거 완료')
+    'Restart Claude Code to apply changes.',
+  ].join('\n'), 'Uninstall complete')
 
-  p.outro('세션 트래킹이 비활성화되었습니다.')
+  p.outro('Session tracking has been deactivated.')
 }
 
-// ── 메인 ──────────────────────────────────────────────────────────────────────
+// -- Auto Setup ---------------------------------------------------------------
+
+async function autoSetup(username) {
+  // Language selection
+  const lang = await p.select({
+    message: 'Which language for status labels?',
+    options: [
+      { value: 'en', label: 'English', hint: 'Registered, Responding, Waiting, Closed' },
+      { value: 'ko', label: 'Korean', hint: '세션 등록, 답변 중, 입력 대기, 세션 종료' },
+      { value: 'ja', label: 'Japanese', hint: 'セッション登録, 応答中, 入力待ち, セッション終了' },
+      { value: 'zh', label: 'Chinese', hint: '会话注册, 响应中, 等待输入, 会话关闭' },
+    ],
+  })
+  if (p.isCancel(lang)) onCancel()
+
+  const labels = STATUS_LABELS[lang]
+  const hash = randomBytes(3).toString('hex')
+  const repoName = `claude-session-storage-${hash}`
+  const repoFullName = `${username}/${repoName}`
+  const projectTitle = 'Claude Session Tracker'
+
+  p.note([
+    'A private repository will be created for storing session issues.',
+    '',
+    `  Repository : ${repoFullName} (private)`,
+    `  Project    : ${projectTitle}`,
+    `  Statuses   : ${labels.registered}, ${labels.responding}, ${labels.waiting}, ${labels.closed}`,
+    `  Scope      : Global`,
+    `  Timeout    : 30 min`,
+  ].join('\n'), 'Setup plan')
+
+  const confirmed = await p.confirm({ message: 'Looks good? Ready to create everything?' })
+  if (p.isCancel(confirmed) || !confirmed) onCancel()
+
+  // Step 1: Create private repo
+  const repoSpin = p.spinner()
+  repoSpin.start('Creating private repository...')
+  try {
+    ghCommand([
+      'repo', 'create', repoFullName,
+      '--private',
+      '--description', 'Claude Code session tracking storage (auto-created)',
+    ])
+    repoSpin.stop('Repository created')
+  } catch (e) {
+    repoSpin.stop('Failed to create repository')
+    p.log.error(e.message)
+    process.exit(1)
+  }
+
+  // Step 2: Create project and parse number from URL
+  const projSpin = p.spinner()
+  projSpin.start('Creating GitHub Project...')
+  let projectNumber
+  try {
+    const output = ghCommand(['project', 'create', '--title', projectTitle, '--owner', username])
+    // Output format: https://github.com/users/{user}/projects/{N}
+    const match = output.match(/\/projects\/(\d+)/)
+    if (!match) throw new Error(`Could not parse project number from output: ${output}`)
+    projectNumber = Number(match[1])
+    projSpin.stop(`Project created (#${projectNumber})`)
+  } catch (e) {
+    projSpin.stop('Failed to create project')
+    p.log.error(e.message)
+    process.exit(1)
+  }
+
+  // Step 3: Fetch project metadata
+  const fetchSpin = p.spinner()
+  fetchSpin.start('Fetching project metadata...')
+  let projectId, statusField
+  try {
+    const meta = fetchProjectMetadata(username, projectNumber)
+    projectId = meta.projectId
+    statusField = meta.statusField
+    fetchSpin.stop('Project metadata fetched')
+  } catch (e) {
+    fetchSpin.stop('Failed to fetch project metadata')
+    p.log.error(e.message)
+    process.exit(1)
+  }
+
+  // Step 4: Update Status field with custom options
+  const statusSpin = p.spinner()
+  statusSpin.start('Configuring status options...')
+  let statusMap
+  try {
+    const labelKeys = ['registered', 'responding', 'waiting', 'closed']
+    const options = labelKeys.map((key, i) => ({
+      name: labels[key],
+      color: STATUS_COLORS[i],
+      description: STATUS_DESCRIPTIONS[i],
+    }))
+
+    const mutation = `
+      mutation($fieldId: ID!, $options: [ProjectV2SingleSelectFieldOptionInput!]!) {
+        updateProjectV2Field(input: {
+          fieldId: $fieldId
+          singleSelectOptions: $options
+        }) {
+          projectV2Field {
+            ... on ProjectV2SingleSelectField {
+              options { id name }
+            }
+          }
+        }
+      }`
+
+    const res = ghGraphql(mutation, { fieldId: statusField.id, options })
+    const updatedOptions = res.data?.updateProjectV2Field?.projectV2Field?.options
+    if (!updatedOptions) throw new Error('Failed to update status options. Unexpected response.')
+
+    // Map returned option IDs to config keys
+    statusMap = {}
+    for (const key of labelKeys) {
+      const match = updatedOptions.find(o => o.name === labels[key])
+      if (!match) throw new Error(`Could not find option ID for status: ${labels[key]}`)
+      statusMap[key] = match.id
+    }
+
+    statusSpin.stop('Status options configured')
+  } catch (e) {
+    statusSpin.stop('Failed to configure status options')
+    p.log.error(e.message)
+    process.exit(1)
+  }
+
+  // Step 5: Install hooks
+  const installSpin = p.spinner()
+  installSpin.start('Installing hooks...')
+  try {
+    installHooksAndConfig({
+      owner: username,
+      projectNumber,
+      projectId,
+      statusFieldId: statusField.id,
+      statusMap,
+      notesRepo: repoFullName,
+      timeoutMinutes: 30,
+      scope: 'global',
+    })
+    installSpin.stop('Hooks installed')
+  } catch (e) {
+    installSpin.stop('Failed to install hooks')
+    p.log.error(e.message)
+    process.exit(1)
+  }
+
+  const projectUrl = `https://github.com/users/${username}/projects/${projectNumber}`
+
+  p.note([
+    'Everything is all set! Here\'s what to do next:',
+    '',
+    '  1. Start Claude Code and have any conversation',
+    `  2. Check your project board at: ${projectUrl}`,
+    '',
+    '  Session issues are stored in:',
+    `     https://github.com/${repoFullName}`,
+  ].join('\n'), 'You\'re ready to go!')
+
+  p.outro(`Run Claude Code and start a conversation — then check ${projectUrl}`)
+}
+
+// -- Manual Setup -------------------------------------------------------------
+
+async function manualSetup(username) {
+  const owner = await p.text({
+    message: 'GitHub Project Owner (username or org)',
+    initialValue: username,
+    validate: v => !v?.trim() ? 'This field is required.' : undefined,
+  })
+  if (p.isCancel(owner)) onCancel()
+  const ownerVal = owner.trim()
+
+  p.log.info(`If you don't have a project yet, no worries! Create one at: https://github.com/${ownerVal}?tab=projects`)
+
+  const number = await p.text({
+    message: 'Project number',
+    placeholder: '1',
+    validate: v => !v || isNaN(Number(v)) ? 'Please enter a number.' : undefined,
+  })
+  if (p.isCancel(number)) onCancel()
+  const projectNumber = Number(number)
+
+  // Fetch project metadata
+  const fetchSpin = p.spinner()
+  fetchSpin.start('Fetching project metadata...')
+  let projectId, statusField, projectTitle, projectUrl
+  try {
+    const meta = fetchProjectMetadata(ownerVal, projectNumber)
+    projectId = meta.projectId
+    statusField = meta.statusField
+    projectTitle = meta.projectTitle
+    projectUrl = meta.projectUrl
+    fetchSpin.stop(`Found project: ${projectTitle}`)
+  } catch (e) {
+    fetchSpin.stop('Failed to fetch project')
+    p.log.error(e.message)
+    process.exit(1)
+  }
+
+  const statusOptions = statusField.options.map(o => `${o.name}`).join(', ')
+  p.note([
+    `  Name    : ${projectTitle}`,
+    `  URL     : ${projectUrl}`,
+    `  ID      : ${projectId}`,
+    `  Statuses: ${statusOptions}`,
+  ].join('\n'), 'Project details')
+
+  const rightProject = await p.confirm({ message: 'Is this the right project?' })
+  if (p.isCancel(rightProject) || !rightProject) onCancel()
+
+  // Map each lifecycle stage to a status option
+  p.log.info('Map each Claude Code lifecycle stage to a Status option below. You can always change these later in ~/.claude/hooks/config.env')
+
+  const choices = statusField.options.map(o => ({ value: o.id, label: o.name }))
+
+  const registered = await p.select({ message: 'Session started       ->', options: choices })
+  if (p.isCancel(registered)) onCancel()
+
+  const responding = await p.select({ message: 'Claude is responding  ->', options: choices })
+  if (p.isCancel(responding)) onCancel()
+
+  const waiting = await p.select({ message: 'Waiting for user      ->', options: choices })
+  if (p.isCancel(waiting)) onCancel()
+
+  const closed = await p.select({ message: 'Session ended         ->', options: choices })
+  if (p.isCancel(closed)) onCancel()
+
+  const statusMap = { registered, responding, waiting, closed }
+
+  const notesRepo = await p.text({
+    message: 'Repository for session issues (when no git remote is available)',
+    placeholder: `${ownerVal}/dev-notes`,
+    validate: v => !v?.includes('/') ? 'Please use owner/repo format.' : undefined,
+  })
+  if (p.isCancel(notesRepo)) onCancel()
+
+  const timeout = await p.text({
+    message: 'Session close timer (minutes)',
+    initialValue: '30',
+    validate: v => !v || isNaN(Number(v)) ? 'Please enter a number.' : undefined,
+  })
+  if (p.isCancel(timeout)) onCancel()
+
+  const scope = await p.select({
+    message: 'Hook scope',
+    options: [
+      { value: 'global',  label: 'Global              (~/.claude/settings.json)' },
+      { value: 'project', label: 'Current project     (.claude/settings.json)' },
+    ],
+  })
+  if (p.isCancel(scope)) onCancel()
+
+  // Confirm summary
+  const scopeLabel = scope === 'global' ? 'Global' : 'Current project'
+  p.note([
+    `  Project    : ${projectTitle} (#${projectNumber})`,
+    `  Notes Repo : ${notesRepo.trim()}`,
+    `  Timeout    : ${timeout} min`,
+    `  Scope      : ${scopeLabel}`,
+  ].join('\n'), 'Setup summary')
+
+  const confirmed = await p.confirm({ message: 'Ready to install?' })
+  if (p.isCancel(confirmed) || !confirmed) onCancel()
+
+  // Install
+  const installSpin = p.spinner()
+  installSpin.start('Installing hooks...')
+  try {
+    installHooksAndConfig({
+      owner: ownerVal,
+      projectNumber,
+      projectId,
+      statusFieldId: statusField.id,
+      statusMap,
+      notesRepo: notesRepo.trim(),
+      timeoutMinutes: Number(timeout),
+      scope,
+    })
+    installSpin.stop('Hooks installed')
+  } catch (e) {
+    installSpin.stop('Failed to install hooks')
+    p.log.error(e.message)
+    process.exit(1)
+  }
+
+  p.note([
+    'Everything is all set! Here\'s what to do next:',
+    '',
+    '  1. Start Claude Code and have any conversation',
+    `  2. Check your project board at: ${projectUrl}`,
+    '',
+    '  Session issues are stored in:',
+    `     https://github.com/${notesRepo.trim()}`,
+  ].join('\n'), 'You\'re ready to go!')
+
+  p.outro(`Run Claude Code and start a conversation — then check ${projectUrl}`)
+}
+
+// -- Main ---------------------------------------------------------------------
 
 async function main() {
   if (process.argv.includes('uninstall')) return uninstall()
 
   console.clear()
-  p.intro(' Claude Session Tracker 설치 ')
+  p.intro(' Claude Session Tracker — Setup ')
 
-  // 1. 환경 확인
+  // Environment check
   const envSpin = p.spinner()
-  envSpin.start('환경 확인 중…')
+  envSpin.start('Checking environment...')
 
   const missing = []
   if (!hasCmd('python3')) missing.push('python3')
-  if (!hasCmd('gh')) missing.push('gh  →  https://cli.github.com')
+  if (!hasCmd('gh')) missing.push('gh  ->  https://cli.github.com')
   if (missing.length) {
-    envSpin.stop('환경 확인 실패', 1)
-    p.log.error(`다음이 설치되어 있지 않습니다:\n${missing.map(m => `  • ${m}`).join('\n')}`)
-    p.outro('설치를 중단합니다.')
+    envSpin.stop('Environment check failed')
+    p.log.error(`Missing required tools:\n${missing.map(m => `  - ${m}`).join('\n')}`)
+    p.outro('Setup aborted.')
     process.exit(1)
   }
 
   if (spawnSync('gh', ['auth', 'status'], { encoding: 'utf-8' }).status !== 0) {
-    envSpin.stop('gh 인증 필요', 1)
-    p.log.warn('먼저 아래 명령어를 실행해주세요:\n\n  gh auth login\n')
-    p.outro('설치를 중단합니다.')
+    envSpin.stop('GitHub CLI not authenticated')
+    p.log.warn('Please run this first:\n\n  gh auth login\n')
+    p.outro('Setup aborted.')
     process.exit(1)
   }
-  envSpin.stop('환경 확인 완료')
+  envSpin.stop('Environment looks good')
 
-  // 2. GitHub Project 정보 입력
-  const project = await p.group({
-    owner: () => p.text({
-      message: 'GitHub Project Owner  (username 또는 org)',
-      placeholder: 'your-username',
-      validate: v => !v?.trim() ? '필수 입력입니다.' : undefined,
-    }),
-    number: () => p.text({
-      message: 'GitHub Project Number',
-      placeholder: '1',
-      validate: v => !v || isNaN(Number(v)) ? '숫자를 입력해주세요.' : undefined,
-    }),
-  }, { onCancel: () => { p.cancel('설치 취소'); process.exit(0) } })
-
-  // 3. Project / Status field 자동 조회
-  const fetchSpin = p.spinner()
-  fetchSpin.start('GitHub Project 조회 중…')
-
-  let projectId, statusField
-  try {
-    const query = `
-      query($login: String!, $number: Int!) {
-        user(login: $login) {
-          projectV2(number: $number) {
-            id
-            fields(first: 30) {
-              nodes { ... on ProjectV2SingleSelectField { id name options { id name } } }
-            }
-          }
-        }
-        organization(login: $login) {
-          projectV2(number: $number) {
-            id
-            fields(first: 30) {
-              nodes { ... on ProjectV2SingleSelectField { id name options { id name } } }
-            }
-          }
-        }
-      }`
-    const res = ghGraphql(query, {
-      login: project.owner.trim(),
-      number: Number(project.number),
-    })
-    const pv2 = res.data?.user?.projectV2 ?? res.data?.organization?.projectV2
-    if (!pv2) throw new Error('Project를 찾을 수 없습니다. Owner와 Number를 확인해주세요.')
-
-    projectId = pv2.id
-    statusField = pv2.fields.nodes.find(n => n?.name === 'Status')
-    if (!statusField) throw new Error("'Status' 필드를 찾을 수 없습니다.")
-
-    fetchSpin.stop(`조회 완료  (Status 옵션 ${statusField.options.length}개)`)
-  } catch (e) {
-    fetchSpin.stop('조회 실패', 1)
-    p.log.error(e.message)
+  // Detect authenticated user
+  const username = getAuthenticatedUser()
+  if (!username) {
+    p.log.error('Could not detect your GitHub username. Please make sure `gh auth login` is completed.')
+    p.outro('Setup aborted.')
     process.exit(1)
   }
 
-  // 4. 각 lifecycle에 Status 옵션 매핑
-  p.log.info('각 Claude Code lifecycle 단계에 맞는 Status를 선택해주세요.')
-  const choices = statusField.options.map(o => ({ value: o.id, label: o.name }))
+  p.log.message(`Hey ${username}! Let's set up session tracking for Claude Code.`)
 
-  const statusMap = await p.group({
-    registered: () => p.select({ message: '세션 시작 시     →', options: choices }),
-    responding: () => p.select({ message: '답변 중          →', options: choices }),
-    waiting:    () => p.select({ message: '응답 완료 (대기) →', options: choices }),
-    closed:     () => p.select({ message: '세션 종료        →', options: choices }),
-  }, { onCancel: () => { p.cancel('설치 취소'); process.exit(0) } })
-
-  // 5. 기타 설정
-  const extras = await p.group({
-    notesRepo: () => p.text({
-      message: 'git remote 없을 때 Issue 생성할 기본 repo',
-      placeholder: `${project.owner.trim()}/dev-notes`,
-      validate: v => !v?.includes('/') ? 'owner/repo 형식으로 입력해주세요.' : undefined,
-    }),
-    timeout: () => p.text({
-      message: '세션 종료 타이머  (분)',
-      initialValue: '30',
-      validate: v => !v || isNaN(Number(v)) ? '숫자를 입력해주세요.' : undefined,
-    }),
-    scope: () => p.select({
-      message: 'Hook 적용 범위',
-      options: [
-        { value: 'project', label: '현재 프로젝트만   (.claude/settings.json)' },
-        { value: 'global',  label: '전역              (~/.claude/settings.json)' },
-      ],
-    }),
-  }, { onCancel: () => { p.cancel('설치 취소'); process.exit(0) } })
-
-  // 6. 설치 확인
-  const confirmed = await p.confirm({
-    message: [
-      '설치를 진행할까요?',
-      `  Project ID  : ${projectId}`,
-      `  Notes Repo  : ${extras.notesRepo}`,
-      `  타이머      : ${extras.timeout}분`,
-      `  적용 범위   : ${extras.scope === 'global' ? '전역' : '현재 프로젝트'}`,
-    ].join('\n'),
+  // Choose setup mode
+  const mode = await p.select({
+    message: 'How would you like to set up?',
+    options: [
+      { value: 'auto', label: 'Auto setup (recommended)', hint: 'Creates a private repo and project for you' },
+      { value: 'manual', label: 'Manual setup', hint: 'Use your own existing project' },
+    ],
   })
-  if (!confirmed) { p.cancel('설치 취소'); process.exit(0) }
+  if (p.isCancel(mode)) onCancel()
 
-  // 7. 설치 실행
-  const installSpin = p.spinner()
-  installSpin.start('설치 중…')
-
-  try {
-    // 디렉토리 생성
-    mkdirSync(HOOKS_DIR, { recursive: true })
-    mkdirSync(STATE_DIR, { recursive: true })
-
-    // Python 스크립트 복사 + 실행 권한
-    for (const f of PY_FILES) {
-      copyFileSync(join(HOOKS_SRC, f), join(HOOKS_DIR, f))
-      chmodSync(join(HOOKS_DIR, f), 0o755)
-    }
-
-    // config.env 저장
-    writeFileSync(CONFIG_FILE, [
-      `GITHUB_PROJECT_OWNER=${project.owner.trim()}`,
-      `GITHUB_PROJECT_NUMBER=${project.number}`,
-      `GITHUB_PROJECT_ID=${projectId}`,
-      `GITHUB_STATUS_FIELD_ID=${statusField.id}`,
-      `GITHUB_STATUS_REGISTERED=${statusMap.registered}`,
-      `GITHUB_STATUS_RESPONDING=${statusMap.responding}`,
-      `GITHUB_STATUS_WAITING=${statusMap.waiting}`,
-      `GITHUB_STATUS_CLOSED=${statusMap.closed}`,
-      `NOTES_REPO=${extras.notesRepo.trim()}`,
-      `DONE_TIMEOUT_SECS=${Number(extras.timeout) * 60}`,
-    ].join('\n') + '\n')
-
-    // settings.json 업데이트
-    const settingsPath = extras.scope === 'global'
-      ? join(HOME, '.claude', 'settings.json')
-      : (() => {
-          mkdirSync(join(process.cwd(), '.claude'), { recursive: true })
-          return join(process.cwd(), '.claude', 'settings.json')
-        })()
-
-    writeFileSync(
-      settingsPath,
-      JSON.stringify(mergeHooks(readJson(settingsPath), HOOKS_DIR), null, 2) + '\n',
-    )
-
-    installSpin.stop('설치 완료')
-  } catch (e) {
-    installSpin.stop('설치 실패', 1)
-    p.log.error(e.message)
-    process.exit(1)
+  if (mode === 'auto') {
+    await autoSetup(username)
+  } else {
+    await manualSetup(username)
   }
-
-  p.note([
-    `Hook 위치  : ${HOOKS_DIR}`,
-    `설정 파일  : ${CONFIG_FILE}`,
-    `로그 파일  : ${join(HOOKS_DIR, 'hooks.log')}`,
-    '',
-    'Claude Code를 재시작하면 자동으로 적용됩니다.',
-  ].join('\n'), '설치 완료')
-
-  p.outro('세션 트래킹이 활성화되었습니다.')
 }
 
 main().catch(e => { console.error(e.message); process.exit(1) })
