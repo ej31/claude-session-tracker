@@ -11,6 +11,23 @@ Automatically track your Claude Code sessions in GitHub Projects. Every prompt, 
 </p>
 
 
+## Install
+
+```bash
+npx claude-session-tracker
+```
+DONE! EASY.
+
+
+The interactive wizard will guide you through
+
+1. **GitHub Project Owner** — your username or org
+2. **GitHub Project Number** — the number in your project URL
+3. **Status mapping** — map each lifecycle stage to your Project's Status options
+4. **Default repo** — where to create issues when there's no git remote
+5. **Idle timeout** — minutes before auto-closing (default: 30)
+6. **Scope** — current project only or global
+
 ## Why?
 
 Claude Code sessions are ephemeral. When a session ends, the conversation disappears. If you're working on multiple tasks across projects, it's hard to remember what happened, what was decided, and what's still pending.
@@ -74,21 +91,6 @@ sequenceDiagram
 - Python 3
 - [GitHub CLI (`gh`)](https://cli.github.com) — run `gh auth login` first
 - A [GitHub Project (v2)](https://docs.github.com/en/issues/planning-and-tracking-with-projects) with a **Status** field
-
-## Install
-
-```bash
-npx claude-session-tracker
-```
-
-The interactive wizard will guide you through:
-
-1. **GitHub Project Owner** — your username or org
-2. **GitHub Project Number** — the number in your project URL
-3. **Status mapping** — map each lifecycle stage to your Project's Status options
-4. **Default repo** — where to create issues when there's no git remote
-5. **Idle timeout** — minutes before auto-closing (default: 30)
-6. **Scope** — current project only or global
 
 ## Uninstall
 
