@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from github_utils import (
+from cst_github_utils import (
     _notes_repo,
     cancel_timer,
     create_repo_issue_and_add_to_project,

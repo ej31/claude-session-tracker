@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from github_utils import (
+from cst_github_utils import (
     add_issue_comment,
     load_env_file,
     load_state,

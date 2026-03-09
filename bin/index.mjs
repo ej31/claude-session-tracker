@@ -16,6 +16,15 @@ const STATE_DIR = join(HOOKS_DIR, 'state')
 const CONFIG_FILE = join(HOOKS_DIR, 'config.env')
 const HOOKS_SRC = join(__dirname, '..', 'hooks')
 const PY_FILES = [
+  'cst_github_utils.py',
+  'cst_session_start.py',
+  'cst_prompt_to_github_projects.py',
+  'cst_session_stop.py',
+  'cst_mark_done.py',
+  'cst_post_tool_use.py',
+]
+// v1.0.3 이하 하위 호환용 (uninstall 시 레거시 파일도 정리)
+const LEGACY_PY_FILES = [
   'github_utils.py',
   'session_start.py',
   'prompt_to_github_projects.py',
@@ -51,21 +60,21 @@ function mergeHooks(existing, hooksDir) {
     hooks: {
       ...(existing.hooks ?? {}),
       SessionStart: [{
-        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'session_start.py')}`, timeout: 15, async: true }],
+        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_session_start.py')}`, timeout: 15, async: true }],
       }],
       UserPromptSubmit: [{
         matcher: '',
-        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'prompt_to_github_projects.py')}`, timeout: 15, async: true }],
+        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_prompt_to_github_projects.py')}`, timeout: 15, async: true }],
       }],
       PostToolUse: [{
         matcher: 'AskUserQuestion',
-        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'post_tool_use.py')}`, timeout: 15, async: true }],
+        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_post_tool_use.py')}`, timeout: 15, async: true }],
       }],
       Stop: [{
-        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'session_stop.py')}`, timeout: 10, async: true }],
+        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_session_stop.py')}`, timeout: 10, async: true }],
       }],
       SessionEnd: [{
-        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'session_stop.py')}`, timeout: 10, async: true }],
+        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_session_stop.py')}`, timeout: 10, async: true }],
       }],
     },
   }
@@ -75,16 +84,18 @@ function mergeHooks(existing, hooksDir) {
 
 const OUR_HOOK_KEYS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionEnd']
 
+const ALL_KNOWN_FILES = [...PY_FILES, ...LEGACY_PY_FILES]
+
 function removeOurHooks(settings) {
   if (!settings.hooks) return settings
   const cleaned = { ...settings, hooks: { ...settings.hooks } }
   for (const key of OUR_HOOK_KEYS) {
     const entries = cleaned.hooks[key]
     if (!Array.isArray(entries)) continue
-    // 우리 스크립트 경로가 포함된 항목만 제거
+    // 현재 + 레거시 파일명 모두 매칭하여 제거
     cleaned.hooks[key] = entries.filter(entry => {
       const cmds = entry.hooks ?? []
-      return !cmds.some(h => PY_FILES.some(f => h.command?.includes(f)))
+      return !cmds.some(h => ALL_KNOWN_FILES.some(f => h.command?.includes(f)))
     })
     if (cleaned.hooks[key].length === 0) delete cleaned.hooks[key]
   }
@@ -106,8 +117,8 @@ async function uninstall() {
 
   let removed = 0
 
-  // 1. Python 스크립트 제거
-  for (const f of PY_FILES) {
+  // 1. Python 스크립트 제거 (현재 + 레거시)
+  for (const f of ALL_KNOWN_FILES) {
     const target = join(HOOKS_DIR, f)
     if (existsSync(target)) { unlinkSync(target); removed++ }
   }

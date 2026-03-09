@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from github_utils import (
+from cst_github_utils import (
     add_issue_comment,
     cancel_timer,
     load_env_file,
@@ -25,7 +25,7 @@ from github_utils import (
 
 logger = setup_logger("session-stop")
 
-MARK_DONE_SCRIPT = str(Path(__file__).parent / "mark_done.py")
+MARK_DONE_SCRIPT = str(Path(__file__).parent / "cst_mark_done.py")
 
 
 def main() -> int:
