@@ -271,7 +271,7 @@ async function autoSetup(username) {
     `  Repository : ${repoFullName} (private)`,
     `  Project    : ${projectTitle}`,
     `  Statuses   : ${labels.registered}, ${labels.responding}, ${labels.waiting}, ${labels.closed}`,
-    `  Date fields : Created, Last Active`,
+    `  Date fields : Session Created, Last Active`,
     `  Scope      : Global`,
     `  Timeout    : 30 min`,
   ].join('\n'), 'Setup plan')
@@ -395,7 +395,7 @@ async function autoSetup(username) {
         }
       }`
 
-    const createdRes = ghGraphql(dateFieldMutation, { projectId, name: 'Created' })
+    const createdRes = ghGraphql(dateFieldMutation, { projectId, name: 'Session Created' })
     createdFieldId = createdRes.data?.createProjectV2Field?.projectV2Field?.id
     if (!createdFieldId) {
       const errMsg = createdRes.errors?.map(e => e.message).join(', ') || JSON.stringify(createdRes)

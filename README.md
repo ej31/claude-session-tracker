@@ -151,7 +151,10 @@ Long project names get truncated at 20 chars.
 Resume a session with `claude --resume`? Tracker reuses the same GitHub Issue instead of creating a new one.
 
 **Git remote auto-detection**
-Has a GitHub remote? We create issues there. No remote? Falls back to your configured default repo.
+Has a GitHub remote? We use it for the issue title prefix. Issues always land in your configured storage repo.
+
+**Custom date fields**
+Auto setup creates two custom date fields in your project: `Created` (set when a session starts) and `Last Active` (updated on every prompt). However, the GitHub API doesn't support modifying project views programmatically, so you'll need to manually add these fields to your board view. Go to your project → open any view → click `+` to add a field.
 
 **Zero blocking**
 All hooks run async. Tracking never slows down Claude.
