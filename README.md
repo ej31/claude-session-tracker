@@ -1,96 +1,93 @@
 # claude-session-tracker
 
-Automatically track your Claude Code sessions in GitHub Projects. Every prompt, every response, every decision — recorded as GitHub Issue comments, so you never lose context.
+Never lose a Claude Code conversation again. Every prompt, every response, every decision automatically saved to GitHub Projects. It's like having a time machine for your coding sessions.
 
-
-## Result
+## Results
 
 <p>
-  <img alt="GitHub Projects board view" src="https://github.com/user-attachments/assets/0705f26d-9517-4186-9533-217a166bd177" />
-  <img alt="GitHub Issue with session comments" src="https://github.com/user-attachments/assets/0f8ca148-a5bc-4c08-ac45-93aafc407962" />
+  <img width="49%" alt="GitHub Projects board view" src="https://github.com/user-attachments/assets/0705f26d-9517-4186-9533-217a166bd177" />
+  <img width="49%" alt="GitHub Issue with session comments" src="https://github.com/user-attachments/assets/0f8ca148-a5bc-4c08-ac45-93aafc407962" />
 </p>
-
 
 ## Install
 
 ```bash
 npx claude-session-tracker
 ```
-DONE! EASY.
 
+Enter. Enter. Enter. Done. Seriously... for real.
 
-The interactive wizard will guide you through
-
+The wizard asks you like 6 questions:
 1. **GitHub Project Owner** — your username or org
-2. **GitHub Project Number** — the number in your project URL
-3. **Status mapping** — map each lifecycle stage to your Project's Status options
-4. **Default repo** — where to create issues when there's no git remote
-5. **Idle timeout** — minutes before auto-closing (default: 30)
-6. **Scope** — current project only or global
+2. **GitHub Project Number** — grab it from your project URL
+3. **Status mapping** — connect your Project's Status field to our lifecycle stages
+4. **Default repo** — fallback when there's no git remote
+5. **Idle timeout** — how long before we auto-close (default: 30 mins)
+6. **Scope** — this project only, or go global
+
+That's it. You're done.
+
+## What It Does
+
+When you chat with Claude Code, the tracker automatically:
+
+- Creates a GitHub Issue for your session
+- Records every prompt you type
+- Records every response Claude gives
+- Updates the issue title with your latest prompt (so you can scan history at a glance)
+- Tracks session status: Registered → Responding → Waiting → Closed
+- Auto-assigns issues to you
+- Saves timestamps for everything
+- Auto-closes idle sessions (configurable)
+
+No setup after install. Just use Claude Code like normal. Everything flows to GitHub Projects automatically.
 
 ## Why?
 
-Claude Code sessions are ephemeral. When a session ends, the conversation disappears. If you're working on multiple tasks across projects, it's hard to remember what happened, what was decided, and what's still pending.
+Claude Code sessions disappear when they end. If you're juggling multiple tasks across projects, it's chaos. What did you decide? What was the discussion? Where did you leave off?
 
-**claude-session-tracker** solves this by:
+**claude-session-tracker** fixes this by making your entire conversation history searchable and shareable on GitHub Projects.
 
-- Creating a GitHub Issue for each session and linking it to your GitHub Project
-- Recording every prompt and response as issue comments (with timestamps)
-- Auto-updating the issue title with your latest prompt for quick scanning
-- Tracking session lifecycle status in GitHub Projects (registered → responding → waiting → closed)
-- Auto-assigning issues to you
-- Supporting session resume without duplicate issues
+## Use Cases
+
+**Personal context log**
+Never forget what you discussed. Search your GitHub Projects and find any session in seconds.
+
+**Team collaboration**
+Share a GitHub Project with your team. Everyone sees what Claude is working on across all your repos. Perfect for code reviews and onboarding.
+
+**Session handoff**
+Paused work? Come back tomorrow and resume with full context. The tracker picks up where you left off, no duplicates.
+
+**Audit trail**
+Track everything Claude did, when it did it, and why. Useful for reviews and learning what worked.
 
 ## How It Works
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant C as Claude Code
-    participant H as Hooks
-    participant G as GitHub
+Simple flow:
 
-    U->>C: Start session
-    C->>H: SessionStart
-    H->>G: Create Issue + Add to Project
-    G-->>H: Issue URL
-    H-->>C: "This session is tracked at URL"
-    C-->>U: Session tracking notification
+1. **SessionStart** — Tracker creates a GitHub Issue and adds it to your Project (status: Registered)
+2. **You type a prompt** — Gets saved as a comment, issue title updates, status changes to Responding
+3. **Claude responds** — Response gets saved as a comment, status changes to Waiting, idle timer starts
+4. **Idle for 30 mins?** — Issue auto-closes
+5. **You send another prompt?** — Timer resets, status goes back to Responding
 
-    U->>C: Type prompt
-    C->>H: UserPromptSubmit
-    H->>G: Status → Responding
-    H->>G: Save prompt as comment
-    H->>G: Update issue title
+All hooks run async, so tracking never slows you down.
 
-    C-->>U: Response
-    C->>H: Stop
-    H->>G: Status → Waiting
-    H->>G: Save response as comment
-    H->>H: Start idle timer (30 min)
-
-    alt No input for 30 min
-        H->>G: Status → Closed
-    else User sends new prompt
-        U->>C: Type prompt
-        C->>H: UserPromptSubmit (cancel timer)
-    end
-```
-
-| Claude Code Event | GitHub Projects Status | Action |
+**Status tracking:**
+| Claude Code Event | GitHub Status | What Happens |
 |---|---|---|
-| `SessionStart` | Registered | Create GitHub Issue + add to Project |
-| `UserPromptSubmit` | Responding | Save prompt as comment, update title |
-| `PostToolUse` | — | Save AskUserQuestion selections as comment |
-| `Stop` | Waiting | Save response as comment, start idle timer |
-| Timer expires | Closed | Auto-close after configurable timeout (default: 30 min) |
+| Session starts | Registered | Issue created, added to Project |
+| You submit prompt | Responding | Prompt saved, title updated |
+| Claude responds | Waiting | Response saved, idle timer starts |
+| Timer expires | Closed | Session auto-closed |
 
 ## Prerequisites
 
 - Node.js 18+
 - Python 3
-- [GitHub CLI (`gh`)](https://cli.github.com) — run `gh auth login` first
-- A [GitHub Project (v2)](https://docs.github.com/en/issues/planning-and-tracking-with-projects) with a **Status** field
+- GitHub CLI (`gh`) — run `gh auth login` first
+- A GitHub Project (v2) with a Status field
 
 ## Uninstall
 
@@ -98,14 +95,15 @@ sequenceDiagram
 npx claude-session-tracker uninstall
 ```
 
-Safely removes only what was installed:
-- Hook scripts (`cst_*.py`)
-- Configuration (`config.env`)
+Removes everything we installed:
+- Hook scripts
+- Configuration
 - State files and logs
-- Hook entries from `settings.json` (your other hooks are preserved)
+- Doesn't touch your other hooks
 
-## What Gets Installed
+## Under the Hood
 
+Files we install to `~/.claude/hooks/`:
 ```
 ~/.claude/hooks/
 ├── cst_github_utils.py              # Shared utilities
@@ -121,38 +119,37 @@ Safely removes only what was installed:
 
 ## Features
 
-### Session URL Notification
+**Session URL notification**
+When a session starts, Claude tells you where it's tracked:
+```
+This session is being tracked at https://github.com/you/repo/issues/42
+```
 
-When a session starts, Claude will inform you of the tracking URL:
-
-> This session is being tracked at https://github.com/you/repo/issues/42
-
-### Smart Title Updates
-
-The issue title auto-updates with your latest prompt in the format:
-
+**Smart title updates**
+Issue title auto-updates with your latest prompt:
 ```
 [project-name] your latest prompt here...
 ```
+Long project names get truncated at 20 chars.
 
-Project names longer than 20 characters are truncated with `...`.
+**Resume without duplicates**
+Resume a session with `claude --resume`? Tracker reuses the same GitHub Issue instead of creating a new one.
 
-### Resume Detection
+**Git remote auto-detection**
+Has a GitHub remote? We create issues there. No remote? Falls back to your configured default repo.
 
-When you resume a session with `claude --resume`, the tracker reuses the existing GitHub Issue instead of creating a duplicate.
-
-### Git Remote Auto-Detection
-
-If your working directory has a GitHub remote, issues are created in that repository. Otherwise, they go to your configured default repo.
-
-### All Hooks Run Async
-
-Every hook runs with `async: true`, so tracking never blocks your workflow.
+**Zero blocking**
+All hooks run async. Tracking never slows down Claude.
 
 ## Configuration
 
-Edit `~/.claude/hooks/config.env` directly, or re-run `npx claude-session-tracker`.
+Edit `~/.claude/hooks/config.env` directly, or just re-run the installer:
 
+```bash
+npx claude-session-tracker
+```
+
+Config file format:
 ```env
 GITHUB_PROJECT_OWNER=your-username
 GITHUB_PROJECT_NUMBER=1
@@ -165,6 +162,12 @@ GITHUB_STATUS_CLOSED=...
 NOTES_REPO=your-username/dev-notes
 DONE_TIMEOUT_SECS=1800
 ```
+
+## Contributing
+
+Found a bug? Have an idea? Contributions are always welcome!
+
+Open an issue, submit a PR, or drop a feature request. We're here to make tracking sessions less painful.
 
 ## License
 
