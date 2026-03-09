@@ -1,0 +1,30 @@
+{
+  "name": "claude-session-tracker",
+  "version": "1.0.0",
+  "description": "Claude Code 세션을 GitHub Projects에 자동으로 트래킹하는 hook 설치 도구",
+  "type": "module",
+  "bin": {
+    "claude-session-tracker": "./bin/index.mjs"
+  },
+  "files": [
+    "bin/",
+    "hooks/"
+  ],
+  "dependencies": {
+    "@clack/prompts": "^0.9.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["claude", "claude-code", "github-projects", "hook", "session-tracker"],
+  "author": "ej31",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ej31/context-throwing.git"
+  },
+  "homepage": "https://github.com/ej31/context-throwing#readme",
+  "bugs": {
+    "url": "https://github.com/ej31/context-throwing/issues"
+  }
+}
