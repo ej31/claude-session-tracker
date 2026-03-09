@@ -295,16 +295,18 @@ async function autoSetup(username) {
     process.exit(1)
   }
 
-  // Step 2: Create project and parse number from URL
+  // Step 2: Create project, then look up its number via project list
   const projSpin = p.spinner()
   projSpin.start('Creating GitHub Project...')
   let projectNumber
   try {
-    const output = ghCommand(['project', 'create', '--title', projectTitle, '--owner', username])
-    // Output format: https://github.com/users/{user}/projects/{N}
-    const match = output.match(/\/projects\/(\d+)/)
-    if (!match) throw new Error(`Could not parse project number from output: ${output}`)
-    projectNumber = Number(match[1])
+    ghCommand(['project', 'create', '--title', projectTitle, '--owner', username])
+    // gh project create produces no output — look up the project we just created
+    const listOutput = ghCommand(['project', 'list', '--owner', username, '--format', 'json', '--limit', '10'])
+    const projects = JSON.parse(listOutput).projects ?? []
+    const created = projects.find(proj => proj.title === projectTitle)
+    if (!created) throw new Error('Project was created but could not be found in project list.')
+    projectNumber = created.number
     projSpin.stop(`Project created (#${projectNumber})`)
   } catch (e) {
     projSpin.stop('Failed to create project')
