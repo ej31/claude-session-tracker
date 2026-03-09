@@ -6,8 +6,8 @@ Automatically track your Claude Code sessions in GitHub Projects. Every prompt, 
 ## Result
 
 <p>
-  <img width="49%" alt="GitHub Projects board view" src="https://github.com/user-attachments/assets/0705f26d-9517-4186-9533-217a166bd177" />
-  <img width="49%" alt="GitHub Issue with session comments" src="https://github.com/user-attachments/assets/b0839c8f-c082-4f06-90a2-d1c29d37d30f" />
+  <img alt="GitHub Projects board view" src="https://github.com/user-attachments/assets/0705f26d-9517-4186-9533-217a166bd177" />
+  <img alt="GitHub Issue with session comments" src="https://github.com/user-attachments/assets/0f8ca148-a5bc-4c08-ac45-93aafc407962" />
 </p>
 
 
