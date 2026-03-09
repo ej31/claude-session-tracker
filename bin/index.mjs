@@ -630,6 +630,31 @@ async function main() {
 
   p.log.message(`Hey ${username}! Let's set up session tracking for Claude Code.`)
 
+  // Detect existing installation
+  if (existsSync(CONFIG_FILE)) {
+    p.log.warn('An existing installation was detected.')
+    p.note([
+      '  Config : ~/.claude/hooks/config.env',
+      '  Hooks  : ~/.claude/hooks/cst_*.py',
+      '',
+      '  Continuing will overwrite your current settings.',
+      '  To remove the existing installation first, run:',
+      '    npx claude-session-tracker uninstall',
+    ].join('\n'), 'Already installed')
+
+    const action = await p.select({
+      message: 'What would you like to do?',
+      options: [
+        { value: 'reinstall', label: 'Reinstall (overwrite current settings)' },
+        { value: 'cancel', label: 'Cancel' },
+      ],
+    })
+    if (p.isCancel(action) || action === 'cancel') {
+      p.outro('Setup cancelled. Your existing installation is unchanged.')
+      process.exit(0)
+    }
+  }
+
   // Choose setup mode
   const mode = await p.select({
     message: 'How would you like to set up?',
