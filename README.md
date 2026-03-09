@@ -178,6 +178,20 @@ NOTES_REPO=your-username/dev-notes
 DONE_TIMEOUT_SECS=1800
 ```
 
+## Known Issues
+
+**Async hook completion messages appearing in Claude Code**
+
+You may see messages like this after every prompt/response:
+```
+⎿  Async hook UserPromptSubmit completed
+⎿  Async hook Stop completed
+```
+
+This is a Claude Code behavior, not a bug in this tool. All hooks run with `async: true` to avoid blocking your workflow, and Claude Code currently has no option to suppress these completion messages.
+
+A feature request has been filed upstream: [anthropics/claude-code#32551](https://github.com/anthropics/claude-code/issues/32551)
+
 ## Contributing
 
 Found a bug? Have an idea? Contributions are always welcome!
