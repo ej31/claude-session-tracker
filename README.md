@@ -9,39 +9,25 @@
 [![Claude Code](https://img.shields.io/badge/Claude_Code-compatible-blueviolet)](https://claude.ai/code)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/ej31/claude-session-tracker/pulls)
 
-Never lose a Claude Code conversation again. Every prompt, every response, every decision automatically saved to GitHub Projects. It's like having a time machine for your coding sessions.
+**Never lose a Claude Code conversation again.**
 
-## Install
+_Every prompt, every response, every decision — automatically saved to GitHub Projects._
+
+[Quick Start](#quick-start) • [What It Does](#what-it-does) • [How It Works](#how-it-works) • [Use Cases](#use-cases) • [Configuration](#configuration)
+
+---
+
+## Quick Start
+
+**Step 1: Install**
 
 ```bash
 npx claude-session-tracker
 ```
 
-Enter. Enter. Enter. Done. Seriously... for real.
+**Step 2: Answer ~6 questions**
 
-## Results
-
-<p>
-  <img alt="GitHub Projects board view" src="https://github.com/user-attachments/assets/0705f26d-9517-4186-9533-217a166bd177" />
-</p>  
-  
-<p>
-  <img alt="GitHub Issue with session comments" src="https://github.com/user-attachments/assets/0f8ca148-a5bc-4c08-ac45-93aafc407962" />
-</p>
-
-### Custom date fields
-
-Auto setup creates two custom date fields in your project `Created` (set when a session starts) and `Last Active` (updated on every prompt).
-
-However the GitHub API doesn't support modifying project views programmatically, so you'll need to manually add these fields to your board view.
-
-Go to your project → open any view → click `+` to add a field.
-
-<img width="80%" alt="image" src="https://github.com/user-attachments/assets/c5cc4d4e-6f1f-4847-a901-9098af1db852" />
-
-### Custom Setup
-
-The wizard asks you like 6 questions
+The wizard asks you:
 1. **GitHub Project Owner** — your username or org
 2. **GitHub Project Number** — grab it from your project URL
 3. **Status mapping** — connect your Project's Status field to our lifecycle stages
@@ -49,12 +35,35 @@ The wizard asks you like 6 questions
 5. **Idle timeout** — how long before we auto-close (default: 30 mins)
 6. **Scope** — this project only, or go global
 
-That's it.
+**Step 3: Use Claude Code like normal**
 
+That's it. Everything flows to GitHub Projects automatically.
+
+---
+
+## Demo
+
+<p>
+  <img alt="GitHub Projects board view" src="https://github.com/user-attachments/assets/0705f26d-9517-4186-9533-217a166bd177" />
+</p>
+
+<p>
+  <img alt="GitHub Issue with session comments" src="https://github.com/user-attachments/assets/0f8ca148-a5bc-4c08-ac45-93aafc407962" />
+</p>
+
+### Custom date fields
+
+Auto setup creates two custom date fields in your project — `Created` (set when a session starts) and `Last Active` (updated on every prompt).
+
+The GitHub API doesn't support modifying project views programmatically, so you'll need to manually add these fields to your board view. Go to your project → open any view → click `+` to add a field.
+
+<img width="80%" alt="image" src="https://github.com/user-attachments/assets/c5cc4d4e-6f1f-4847-a901-9098af1db852" />
+
+---
 
 ## What It Does
 
-When you chat with Claude Code, the tracker automatically
+When you chat with Claude Code, the tracker automatically:
 
 - Creates a GitHub Issue for your session
 - Records every prompt you type
@@ -65,45 +74,22 @@ When you chat with Claude Code, the tracker automatically
 - Saves timestamps for everything
 - Auto-closes idle sessions (configurable)
 
-No setup after install. Just use Claude Code like normal. Everything flows to GitHub Projects automatically.
+No setup after install. Just use Claude Code like normal.
+
+---
 
 ## Why?
 
 Claude Code sessions disappear when they end.
 
-If you're juggling multiple tasks across projects, it's chaos.
-
-What did you decide? What was the discussion? Where did you leave off?
+If you're juggling multiple tasks across projects, it's chaos. What did you decide? What was the discussion? Where did you leave off?
 
 **claude-session-tracker** fixes this by making your entire conversation history searchable and shareable on GitHub Projects.
 
-## Use Cases
-
-**Personal context log**
-Never forget what you discussed. Search your GitHub Projects and find any session in seconds.
-
-**Team collaboration**
-Share a GitHub Project with your team. Everyone sees what Claude is working on across all your repos. Perfect for code reviews and onboarding.
-
-**Session handoff**
-Paused work? Come back tomorrow and resume with full context. The tracker picks up where you left off, no duplicates.
-
-**Audit trail**
-Track everything Claude did, when it did it, and why. Useful for reviews and learning what worked.
+---
 
 ## How It Works
 
-Simple flow
-
-1. **SessionStart** — Tracker creates a GitHub Issue and adds it to your Project (status: Registered)
-2. **You type a prompt** — Gets saved as a comment, issue title updates, status changes to Responding
-3. **Claude responds** — Response gets saved as a comment, status changes to Waiting, idle timer starts
-4. **Idle for 30 mins?** — Issue auto-closes
-5. **You send another prompt?** — Timer resets, status goes back to Responding
-
-All hooks run async, so tracking never slows you down.
-
-**Status tracking:**
 | Claude Code Event | GitHub Status | What Happens |
 |---|---|---|
 | Session starts | Registered | Issue created, added to Project |
@@ -111,59 +97,20 @@ All hooks run async, so tracking never slows you down.
 | Claude responds | Waiting | Response saved, idle timer starts |
 | Timer expires | Closed | Session auto-closed |
 
-## Prerequisites
+All hooks run async — tracking never slows you down.
 
-- Node.js 18+
-- Python 3
-- **GitHub CLI (`gh`) — REQUIRED.** Install it from https://cli.github.com. The tracker won't work without it.
-  ```bash
-  # Install (macOS)
-  brew install gh
-
-  # Login and set required scopes
-  gh auth login --scopes "project,repo"
-  ```
-  Needs `project` (read/write GitHub Projects) and `repo` (create issues, comments) scopes.
-- A GitHub Project (v2) with a Status field (auto setup creates one for you)
-
-## Uninstall
-
-```bash
-npx claude-session-tracker uninstall
-```
-
-Removes everything we installed
-- Hook scripts
-- Configuration
-- State files and logs
-- Doesn't touch your other hooks
-
-## Under the Hood
-
-Files we install to `~/.claude/hooks/`:
-```
-~/.claude/hooks/
-├── cst_github_utils.py              # Shared utilities
-├── cst_session_start.py             # SessionStart hook
-├── cst_prompt_to_github_projects.py # UserPromptSubmit hook
-├── cst_post_tool_use.py             # PostToolUse hook
-├── cst_session_stop.py              # Stop / SessionEnd hook
-├── cst_mark_done.py                 # Idle timeout handler
-├── config.env                       # Your configuration
-├── hooks.log                        # Execution logs
-└── state/                           # Per-session state (JSON)
-```
-
-## Features
+### Features
 
 **Session URL notification**
-When a session starts, Claude tells you where it's tracked
+
+When a session starts, Claude tells you where it's tracked:
 ```
 This session is being tracked at https://github.com/you/repo/issues/42
 ```
 
 **Smart title updates**
-Issue title auto-updates with your latest prompt
+
+Issue title auto-updates with your latest prompt:
 ```
 [project-name] your latest prompt here...
 ```
@@ -181,15 +128,53 @@ Has a GitHub remote? We use it for the issue title prefix. Issues always land in
 
 All hooks run async. Tracking never slows down Claude.
 
+---
+
+## Use Cases
+
+**Personal context log**
+Never forget what you discussed. Search your GitHub Projects and find any session in seconds.
+
+**Team collaboration**
+Share a GitHub Project with your team. Everyone sees what Claude is working on across all your repos. Perfect for code reviews and onboarding.
+
+**Session handoff**
+Paused work? Come back tomorrow and resume with full context. The tracker picks up where you left off, no duplicates.
+
+**Audit trail**
+Track everything Claude did, when it did it, and why. Useful for reviews and learning what worked.
+
+---
+
+## Prerequisites
+
+- Node.js 18+
+- Python 3
+- **GitHub CLI (`gh`) — REQUIRED.** Install it from https://cli.github.com.
+
+  ```bash
+  # Install (macOS)
+  brew install gh
+
+  # Login and set required scopes
+  gh auth login --scopes "project,repo"
+  ```
+
+  Needs `project` (read/write GitHub Projects) and `repo` (create issues, comments) scopes.
+
+- A GitHub Project (v2) with a Status field (auto setup creates one for you)
+
+---
+
 ## Configuration
 
-Edit `~/.claude/hooks/config.env` directly, or just re-run the installer
+Edit `~/.claude/hooks/config.env` directly, or just re-run the installer:
 
 ```bash
 npx claude-session-tracker
 ```
 
-Config file format
+Config file format:
 ```env
 GITHUB_PROJECT_OWNER=your-username
 GITHUB_PROJECT_NUMBER=1
@@ -203,11 +188,41 @@ NOTES_REPO=your-username/dev-notes
 DONE_TIMEOUT_SECS=1800
 ```
 
+---
+
+## Under the Hood
+
+Files we install to `~/.claude/hooks/`:
+```
+~/.claude/hooks/
+├── cst_github_utils.py              # Shared utilities
+├── cst_session_start.py             # SessionStart hook
+├── cst_prompt_to_github_projects.py # UserPromptSubmit hook
+├── cst_post_tool_use.py             # PostToolUse hook
+├── cst_session_stop.py              # Stop / SessionEnd hook
+├── cst_mark_done.py                 # Idle timeout handler
+├── config.env                       # Your configuration
+├── hooks.log                        # Execution logs
+└── state/                           # Per-session state (JSON)
+```
+
+---
+
+## Uninstall
+
+```bash
+npx claude-session-tracker uninstall
+```
+
+Removes everything we installed — hook scripts, configuration, state files and logs. Doesn't touch your other hooks.
+
+---
+
 ## Known Issues
 
 **Async hook completion messages appearing in Claude Code**
 
-You may see messages like this after every prompt/response
+You may see messages like this after every prompt/response:
 ```
 ⎿  Async hook UserPromptSubmit completed
 ⎿  Async hook Stop completed
@@ -217,11 +232,15 @@ This is a Claude Code behavior, not a bug in this tool. All hooks run with `asyn
 
 A feature request has been filed upstream: [anthropics/claude-code#32551](https://github.com/anthropics/claude-code/issues/32551)
 
+---
+
 ## Contributing
 
-Found a bug? Have an idea? Contributions are always welcome!
+Found a bug? Have an idea? Contributions are always welcome.
 
-Open an issue, submit a PR, or drop a feature request. We're here to make tracking sessions less painful.
+Open an issue, submit a PR, or drop a feature request.
+
+---
 
 ## License
 
