@@ -285,6 +285,43 @@ function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId,
   )
 }
 
+// -- Star 요청 ----------------------------------------------------------------
+
+async function askForStar() {
+  const alreadyStarred = spawnSync(
+    'gh', ['api', '/user/starred/ej31/claude-session-tracker'],
+    { stdio: 'ignore' },
+  ).status === 0
+
+  if (alreadyStarred) {
+    p.log.success('You already starred this repo — thank you! ⭐')
+    return
+  }
+
+  p.note([
+    '  If this tool has been useful to you,',
+    '  a GitHub star would mean a lot — just one click!',
+    '',
+    '  https://github.com/ej31/claude-session-tracker',
+  ].join('\n'), '⭐ One small favour')
+
+  const wantStar = await p.confirm({
+    message: 'Star the repo right now? (just press Enter!)',
+  })
+  if (p.isCancel(wantStar) || !wantStar) return
+
+  const result = spawnSync(
+    'gh', ['api', '-X', 'PUT', '/user/starred/ej31/claude-session-tracker'],
+    { stdio: 'ignore' },
+  )
+  if (result.status === 0) {
+    p.log.success('Thank you so much! ⭐ It really helps.')
+  } else {
+    p.log.warn('Could not star automatically. Feel free to do it manually!')
+    p.log.info('https://github.com/ej31/claude-session-tracker')
+  }
+}
+
 // -- Uninstall ----------------------------------------------------------------
 
 async function uninstall() {
@@ -793,6 +830,8 @@ async function main() {
   } else {
     await manualSetup(username)
   }
+
+  await askForStar()
 }
 
 main().catch(e => { console.error(e.message); process.exit(1) })
