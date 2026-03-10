@@ -521,9 +521,10 @@ function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId,
     chmodSync(join(HOOKS_DIR, f), 0o755)
   }
 
-  // Context OS 파일 복사
+  // Context OS 파일 복사 및 초기 DB 구축
   if (contextOs) {
     copyContextOsFiles()
+    runInitialBuild(process.cwd())
   }
 
   const configLines = [
