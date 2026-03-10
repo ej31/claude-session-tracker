@@ -35,6 +35,18 @@ const LEGACY_PY_FILES = [
 const ALL_KNOWN_FILES = [...PY_FILES, ...LEGACY_PY_FILES]
 const OUR_HOOK_KEYS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionEnd']
 
+// -- Context OS ---------------------------------------------------------------
+const CONTEXT_OS_DIR = join(HOME, '.claude', 'context_os')
+const CONTEXT_OS_SRC = join(__dirname, '..', 'context_os')
+const CONTEXT_OS_FILES = [
+  'build_context_os.py',
+  'context_briefing.py',
+  'kuzu_ingest_edit.py',
+  'kuzu_ingest_turn.py',
+  'requirements.txt',
+]
+const CONTEXT_OS_HOOK_MARKER = 'context_os/'
+
 const STATUS_LABELS = {
   en: { registered: 'Registered', responding: 'Responding', waiting: 'Waiting', closed: 'Closed' },
   ko: { registered: '세션 등록', responding: '답변 중', waiting: '입력 대기', closed: '세션 종료' },
@@ -146,6 +158,137 @@ async function tryInstallGh() {
   p.log.warn('Unsupported OS. Please install gh manually.')
   p.log.info('https://cli.github.com/manual/installation')
   return false
+}
+
+// -- ast-grep 자동 설치 -------------------------------------------------------
+
+async function tryInstallAstGrep() {
+  const os = process.platform
+
+  if (os === 'darwin') {
+    if (!hasCmd('brew')) {
+      p.log.warn('Homebrew is not installed.')
+      p.log.info('Install Homebrew first from https://brew.sh, then run: brew install ast-grep')
+      return false
+    }
+    p.log.info('Running: brew install ast-grep')
+    return runCmd('brew', ['install', 'ast-grep'])
+  }
+
+  if (os === 'linux') {
+    if (hasCmd('cargo')) {
+      p.log.info('Running: cargo install ast-grep --locked')
+      return runCmd('cargo', ['install', 'ast-grep', '--locked'])
+    }
+    if (hasCmd('npm')) {
+      p.log.info('Running: npm install -g @ast-grep/cli')
+      return runCmd('npm', ['install', '-g', '@ast-grep/cli'])
+    }
+    p.log.warn('cargo or npm is required to install ast-grep.')
+    p.log.info('Manual install: https://ast-grep.github.io/guide/quick-start.html')
+    return false
+  }
+
+  if (os === 'win32') {
+    if (hasCmd('npm')) {
+      p.log.info('Running: npm install -g @ast-grep/cli')
+      return runCmd('npm', ['install', '-g', '@ast-grep/cli'])
+    }
+    if (hasCmd('cargo')) {
+      p.log.info('Running: cargo install ast-grep --locked')
+      return runCmd('cargo', ['install', 'ast-grep', '--locked'])
+    }
+    p.log.warn('npm or cargo is required to install ast-grep.')
+    p.log.info('Manual install: https://ast-grep.github.io/guide/quick-start.html')
+    return false
+  }
+
+  p.log.warn('Unsupported OS. Please install ast-grep manually.')
+  p.log.info('https://ast-grep.github.io/guide/quick-start.html')
+  return false
+}
+
+// -- Context OS 의존성 설치 ---------------------------------------------------
+
+function installContextOsDeps() {
+  const result = spawnSync('pip3', ['install', 'kuzu', 'GitPython'], {
+    stdio: 'pipe',
+    timeout: 120000,
+  })
+  return result.status === 0
+}
+
+function copyContextOsFiles() {
+  mkdirSync(CONTEXT_OS_DIR, { recursive: true })
+  for (const f of CONTEXT_OS_FILES) {
+    const src = join(CONTEXT_OS_SRC, f)
+    if (existsSync(src)) {
+      copyFileSync(src, join(CONTEXT_OS_DIR, f))
+      chmodSync(join(CONTEXT_OS_DIR, f), 0o755)
+    }
+  }
+}
+
+function mergeContextOsHooks(settings, contextOsDir) {
+  const hooks = { ...(settings.hooks ?? {}) }
+
+  // SessionStart: compact 매처 추가
+  const sessionStartEntries = hooks.SessionStart ?? []
+  hooks.SessionStart = [
+    ...sessionStartEntries,
+    {
+      matcher: 'compact',
+      hooks: [{ type: 'command', command: `python3 ${join(contextOsDir, 'context_briefing.py')}` }],
+    },
+  ]
+
+  // PostToolUse: Edit|Write 매처 추가
+  const postToolEntries = hooks.PostToolUse ?? []
+  hooks.PostToolUse = [
+    ...postToolEntries,
+    {
+      matcher: 'Edit|Write',
+      hooks: [{ type: 'command', command: `python3 ${join(contextOsDir, 'kuzu_ingest_edit.py')}`, async: true }],
+    },
+  ]
+
+  // Stop: Turn 적재 훅 추가
+  const stopEntries = hooks.Stop ?? []
+  hooks.Stop = [
+    ...stopEntries,
+    {
+      hooks: [{ type: 'command', command: `python3 ${join(contextOsDir, 'kuzu_ingest_turn.py')}`, async: true }],
+    },
+  ]
+
+  return { ...settings, hooks }
+}
+
+function runInitialBuild(cwd) {
+  const dbPath = join(HOME, '.claude', 'context_os', 'db')
+  const script = join(CONTEXT_OS_DIR, 'build_context_os.py')
+  const result = spawnSync('python3', [script, cwd], {
+    stdio: 'inherit',
+    env: { ...process.env, CONTEXT_OS_DB_PATH: dbPath },
+    timeout: 300000,
+  })
+  return result.status === 0
+}
+
+function removeContextOsHooks(settings) {
+  if (!settings.hooks) return settings
+  const cleaned = { ...settings, hooks: { ...settings.hooks } }
+  for (const key of OUR_HOOK_KEYS) {
+    const entries = cleaned.hooks[key]
+    if (!Array.isArray(entries)) continue
+    cleaned.hooks[key] = entries.filter(entry => {
+      const cmds = entry.hooks ?? []
+      return !cmds.some(h => h.command?.includes(CONTEXT_OS_HOOK_MARKER))
+    })
+    if (cleaned.hooks[key].length === 0) delete cleaned.hooks[key]
+  }
+  if (Object.keys(cleaned.hooks).length === 0) delete cleaned.hooks
+  return cleaned
 }
 
 function ghGraphql(query, variables = {}) {
@@ -369,13 +512,18 @@ function fetchProjectMetadata(owner, number) {
   return { projectId: pv2.id, projectTitle: pv2.title, projectUrl: pv2.url, statusField }
 }
 
-function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId, statusMap, notesRepo, timeoutMinutes, scope, createdFieldId, lastActiveFieldId, lang }) {
+function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId, statusMap, notesRepo, timeoutMinutes, scope, createdFieldId, lastActiveFieldId, lang, contextOs = false }) {
   mkdirSync(HOOKS_DIR, { recursive: true })
   mkdirSync(STATE_DIR, { recursive: true })
 
   for (const f of PY_FILES) {
     copyFileSync(join(HOOKS_SRC, f), join(HOOKS_DIR, f))
     chmodSync(join(HOOKS_DIR, f), 0o755)
+  }
+
+  // Context OS 파일 복사
+  if (contextOs) {
+    copyContextOsFiles()
   }
 
   const configLines = [
@@ -402,9 +550,16 @@ function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId,
         return join(process.cwd(), '.claude', 'settings.json')
       })()
 
+  let settings = mergeHooks(readJson(settingsPath), HOOKS_DIR)
+
+  // Context OS 훅 병합
+  if (contextOs) {
+    settings = mergeContextOsHooks(settings, CONTEXT_OS_DIR)
+  }
+
   writeFileSync(
     settingsPath,
-    JSON.stringify(mergeHooks(readJson(settingsPath), HOOKS_DIR), null, 2) + '\n',
+    JSON.stringify(settings, null, 2) + '\n',
   )
 }
 
@@ -471,6 +626,11 @@ async function uninstall() {
 
   if (existsSync(STATE_DIR)) { rmSync(STATE_DIR, { recursive: true }); removed++ }
 
+  // Context OS 정리
+  if (existsSync(CONTEXT_OS_DIR)) { rmSync(CONTEXT_OS_DIR, { recursive: true }); removed++ }
+  const contextOsDbDir = join(HOME, '.claude', 'context_os', 'db')
+  if (existsSync(contextOsDbDir)) { rmSync(contextOsDbDir, { recursive: true }); removed++ }
+
   const settingsPaths = [
     join(HOME, '.claude', 'settings.json'),
     join(process.cwd(), '.claude', 'settings.json'),
@@ -479,7 +639,8 @@ async function uninstall() {
     if (!existsSync(sp)) continue
     const original = readJson(sp)
     if (!original.hooks) continue
-    const cleaned = removeOurHooks(original)
+    let cleaned = removeOurHooks(original)
+    cleaned = removeContextOsHooks(cleaned)
     writeFileSync(sp, JSON.stringify(cleaned, null, 2) + '\n')
     removed++
   }
@@ -488,6 +649,7 @@ async function uninstall() {
 
   p.note([
     'Python scripts, config.env, state, and logs have been deleted.',
+    'Context OS scripts and database have been removed.',
     'Hook entries have been removed from settings.json.',
     '',
     'Restart Claude Code to apply changes.',
@@ -667,7 +829,57 @@ async function autoSetup(username) {
     p.log.warn(`Date fields could not be created: ${e.message}\n  This is optional — setup will continue without them.`)
   }
 
-  // Step 5: Install hooks
+  // Step 5: Context OS (optional)
+  p.note([
+    'Context OS builds a local graph of your codebase (symbols, call chains,',
+    'git history) and tracks what you work on in each session.',
+    '',
+    'When Claude Code runs out of context and compacts the conversation,',
+    'Context OS automatically restores the relevant symbols, dependencies,',
+    'and recent work history — so Claude picks up right where you left off.',
+    '',
+    'This is especially helpful for long coding sessions where compact events',
+    'would otherwise cause Claude to lose track of what you were doing.',
+  ].join('\n'), 'Context OS (optional)')
+
+  let enableContextOs = false
+  const wantContextOs = await p.confirm({
+    message: 'Enable Context OS?',
+    initialValue: true,
+  })
+  if (!p.isCancel(wantContextOs) && wantContextOs) {
+    enableContextOs = true
+
+    // ast-grep 확인
+    if (!hasCmd('sg')) {
+      p.log.warn('ast-grep (sg) is required for Context OS but not found.')
+      const shouldInstallSg = await p.confirm({
+        message: 'Install ast-grep now?',
+      })
+      if (!p.isCancel(shouldInstallSg) && shouldInstallSg) {
+        const sgInstalled = await tryInstallAstGrep()
+        if (!sgInstalled || !hasCmd('sg')) {
+          p.log.warn('ast-grep installation failed. Context OS will work with limited symbol extraction.')
+        } else {
+          p.log.success('ast-grep installed successfully!')
+        }
+      }
+    }
+
+    // pip 의존성 설치
+    const depsSpin = p.spinner()
+    depsSpin.start('Installing Context OS dependencies (kuzu, GitPython)...')
+    const depsOk = installContextOsDeps()
+    if (depsOk) {
+      depsSpin.stop('Context OS dependencies installed')
+    } else {
+      depsSpin.stop('Failed to install Context OS dependencies')
+      p.log.warn('Context OS will be configured but may not work until dependencies are installed manually.')
+      p.log.info('Run: pip3 install kuzu GitPython')
+    }
+  }
+
+  // Step 6: Install hooks
   const installSpin = p.spinner()
   installSpin.start('Installing hooks...')
   try {
@@ -683,6 +895,7 @@ async function autoSetup(username) {
       createdFieldId,
       lastActiveFieldId,
       lang,
+      contextOs: enableContextOs,
     })
     installSpin.stop('Hooks installed')
   } catch (e) {
@@ -693,7 +906,7 @@ async function autoSetup(username) {
 
   const projectUrl = `https://github.com/users/${username}/projects/${projectNumber}`
 
-  p.note([
+  const readyLines = [
     'Everything is all set! Here\'s what to do next:',
     '',
     '  1. Start Claude Code and have any conversation',
@@ -701,7 +914,13 @@ async function autoSetup(username) {
     '',
     '  Session issues are stored in:',
     `     https://github.com/${repoFullName}`,
-  ].join('\n'), 'You\'re ready to go!')
+  ]
+  if (enableContextOs) {
+    readyLines.push('')
+    readyLines.push('  Context OS is enabled — context will auto-restore after compact events.')
+  }
+
+  p.note(readyLines.join('\n'), 'You\'re ready to go!')
 
   p.outro(`Run Claude Code and start a conversation — then check ${projectUrl}`)
 }
@@ -817,6 +1036,52 @@ async function manualSetup(username) {
     `  Scope      : ${scopeLabel}`,
   ].join('\n'), 'Setup summary')
 
+  // Context OS (optional)
+  p.note([
+    'Context OS builds a local graph of your codebase (symbols, call chains,',
+    'git history) and tracks what you work on in each session.',
+    '',
+    'When Claude Code runs out of context and compacts the conversation,',
+    'Context OS automatically restores the relevant symbols, dependencies,',
+    'and recent work history — so Claude picks up right where you left off.',
+    '',
+    'This is especially helpful for long coding sessions where compact events',
+    'would otherwise cause Claude to lose track of what you were doing.',
+  ].join('\n'), 'Context OS (optional)')
+
+  let enableContextOs = false
+  const wantContextOs = await p.confirm({
+    message: 'Enable Context OS?',
+    initialValue: true,
+  })
+  if (!p.isCancel(wantContextOs) && wantContextOs) {
+    enableContextOs = true
+
+    if (!hasCmd('sg')) {
+      p.log.warn('ast-grep (sg) is required for Context OS but not found.')
+      const shouldInstallSg = await p.confirm({ message: 'Install ast-grep now?' })
+      if (!p.isCancel(shouldInstallSg) && shouldInstallSg) {
+        const sgInstalled = await tryInstallAstGrep()
+        if (!sgInstalled || !hasCmd('sg')) {
+          p.log.warn('ast-grep installation failed. Context OS will work with limited symbol extraction.')
+        } else {
+          p.log.success('ast-grep installed successfully!')
+        }
+      }
+    }
+
+    const depsSpin = p.spinner()
+    depsSpin.start('Installing Context OS dependencies (kuzu, GitPython)...')
+    const depsOk = installContextOsDeps()
+    if (depsOk) {
+      depsSpin.stop('Context OS dependencies installed')
+    } else {
+      depsSpin.stop('Failed to install Context OS dependencies')
+      p.log.warn('Context OS will be configured but may not work until dependencies are installed manually.')
+      p.log.info('Run: pip3 install kuzu GitPython')
+    }
+  }
+
   const confirmed = await p.confirm({ message: 'Ready to install?' })
   if (p.isCancel(confirmed) || !confirmed) onCancel()
 
@@ -834,6 +1099,7 @@ async function manualSetup(username) {
       timeoutMinutes: Number(timeout),
       scope,
       lang: langManual,
+      contextOs: enableContextOs,
     })
     installSpin.stop('Hooks installed')
   } catch (e) {
@@ -842,7 +1108,7 @@ async function manualSetup(username) {
     process.exit(1)
   }
 
-  p.note([
+  const readyLines = [
     'Everything is all set! Here\'s what to do next:',
     '',
     '  1. Start Claude Code and have any conversation',
@@ -850,7 +1116,13 @@ async function manualSetup(username) {
     '',
     '  Session issues are stored in:',
     `     https://github.com/${notesRepo.trim()}`,
-  ].join('\n'), 'You\'re ready to go!')
+  ]
+  if (enableContextOs) {
+    readyLines.push('')
+    readyLines.push('  Context OS is enabled — context will auto-restore after compact events.')
+  }
+
+  p.note(readyLines.join('\n'), 'You\'re ready to go!')
 
   p.outro(`Run Claude Code and start a conversation — then check ${projectUrl}`)
 }
