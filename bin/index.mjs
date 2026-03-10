@@ -92,58 +92,58 @@ async function tryInstallGh() {
 
   if (os === 'darwin') {
     if (!hasCmd('brew')) {
-      p.log.warn('Homebrew가 설치되어 있지 않습니다.')
-      p.log.info('https://brew.sh 에서 Homebrew를 먼저 설치한 후 brew install gh 를 실행하세요.')
+      p.log.warn('Homebrew is not installed.')
+      p.log.info('Install Homebrew first from https://brew.sh, then run: brew install gh')
       return false
     }
-    p.log.info('실행: brew install gh')
+    p.log.info('Running: brew install gh')
     return runCmd('brew', ['install', 'gh'])
   }
 
   if (os === 'linux') {
     const distro = detectLinuxDistro()
     if (distro === 'debian') {
-      p.log.info('실행: sudo apt update && sudo apt install gh -y')
+      p.log.info('Running: sudo apt update && sudo apt install gh -y')
       const updated = runCmd('sudo', ['apt', 'update'])
       if (!updated) return false
       return runCmd('sudo', ['apt', 'install', 'gh', '-y'])
     }
     if (distro === 'fedora') {
-      p.log.info('실행: sudo dnf install gh -y')
+      p.log.info('Running: sudo dnf install gh -y')
       return runCmd('sudo', ['dnf', 'install', 'gh', '-y'])
     }
     if (distro === 'arch') {
-      p.log.info('실행: sudo pacman -S github-cli --noconfirm')
+      p.log.info('Running: sudo pacman -S github-cli --noconfirm')
       return runCmd('sudo', ['pacman', '-S', 'github-cli', '--noconfirm'])
     }
     if (distro === 'opensuse') {
-      p.log.info('실행: sudo zypper install -y github-cli')
+      p.log.info('Running: sudo zypper install -y github-cli')
       return runCmd('sudo', ['zypper', 'install', '-y', 'github-cli'])
     }
-    p.log.warn(`알 수 없는 Linux 배포판 (${distro}): 자동 설치를 지원하지 않습니다.`)
-    p.log.info('수동 설치: https://cli.github.com/manual/installation')
+    p.log.warn(`Unknown Linux distribution (${distro}): automatic installation is not supported.`)
+    p.log.info('Manual install: https://cli.github.com/manual/installation')
     return false
   }
 
   if (os === 'win32') {
     if (hasCmd('winget')) {
-      p.log.info('실행: winget install --id GitHub.cli -e --accept-source-agreements')
+      p.log.info('Running: winget install --id GitHub.cli -e --accept-source-agreements')
       return runCmd('winget', ['install', '--id', 'GitHub.cli', '-e', '--accept-source-agreements'])
     }
     if (hasCmd('choco')) {
-      p.log.info('실행: choco install gh -y')
+      p.log.info('Running: choco install gh -y')
       return runCmd('choco', ['install', 'gh', '-y'])
     }
     if (hasCmd('scoop')) {
-      p.log.info('실행: scoop install gh')
+      p.log.info('Running: scoop install gh')
       return runCmd('scoop', ['install', 'gh'])
     }
-    p.log.warn('winget, Chocolatey, Scoop 중 하나가 필요합니다.')
-    p.log.info('수동 설치: https://cli.github.com/manual/installation')
+    p.log.warn('winget, Chocolatey, or Scoop is required to install gh automatically.')
+    p.log.info('Manual install: https://cli.github.com/manual/installation')
     return false
   }
 
-  p.log.warn('지원하지 않는 OS입니다. gh를 수동으로 설치해주세요.')
+  p.log.warn('Unsupported OS. Please install gh manually.')
   p.log.info('https://cli.github.com/manual/installation')
   return false
 }
