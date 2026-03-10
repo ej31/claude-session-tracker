@@ -1,13 +1,13 @@
 # claude-session-tracker
+[![npm downloads](https://img.shields.io/npm/dm/claude-session-tracker)](https://www.npmjs.com/package/claude-session-tracker)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/ej31/claude-session-tracker/pulls)
 
 [![npm version](https://img.shields.io/npm/v/claude-session-tracker)](https://www.npmjs.com/package/claude-session-tracker)
-[![npm downloads](https://img.shields.io/npm/dm/claude-session-tracker)](https://www.npmjs.com/package/claude-session-tracker)
-[![OS Compatibility](https://github.com/ej31/claude-session-tracker/actions/workflows/compat.yml/badge.svg)](https://github.com/ej31/claude-session-tracker/actions/workflows/compat.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![GitHub stars](https://img.shields.io/github/stars/ej31/claude-session-tracker?style=social)](https://github.com/ej31/claude-session-tracker/stargazers)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-green?logo=node.js)](https://nodejs.org)
+[![OS Compatibility](https://github.com/ej31/claude-session-tracker/actions/workflows/compat.yml/badge.svg)](https://github.com/ej31/claude-session-tracker/actions/workflows/compat.yml)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-compatible-blueviolet)](https://claude.ai/code)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/ej31/claude-session-tracker/pulls)
+
+
 
 **Never lose a Claude Code conversation again.**
 
