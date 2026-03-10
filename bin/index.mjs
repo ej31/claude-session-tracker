@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import * as p from '@clack/prompts'
-import { spawnSync } from 'node:child_process'
+import { spawnSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import {
   mkdirSync, writeFileSync, readFileSync,
@@ -216,6 +216,129 @@ function getAuthenticatedUser() {
   const result = spawnSync('gh', ['api', 'user', '--jq', '.login'], { encoding: 'utf-8' })
   if (result.status !== 0 || !result.stdout?.trim()) return null
   return result.stdout.trim()
+}
+
+function hasRequiredScopes() {
+  const result = spawnSync('gh', ['auth', 'status'], { encoding: 'utf-8' })
+  const output = result.stdout + result.stderr
+  return output.includes('project') && output.includes('repo')
+}
+
+function openBrowser(url) {
+  const platform = process.platform
+  if (platform === 'darwin') {
+    spawnSync('open', [url])
+  } else if (platform === 'win32') {
+    spawnSync('cmd', ['/c', 'start', url], { shell: true })
+  } else {
+    spawnSync('xdg-open', [url])
+  }
+}
+
+async function fallbackAuthGuide(mode = 'login') {
+  const cmd = mode === 'login'
+    ? 'gh auth login --web --scopes project,repo'
+    : 'gh auth refresh --scopes project,repo'
+
+  p.log.step('Run the command below in your terminal, then press Enter when done.\n')
+  p.log.message(`  ${cmd}\n`)
+
+  await p.text({
+    message: 'Press Enter when done.',
+    placeholder: '',
+  })
+
+  const recheck = spawnSync('gh', ['auth', 'status'], { encoding: 'utf-8' })
+  if (recheck.status !== 0) {
+    p.log.error('Authentication was not completed.')
+    p.outro('Setup aborted.')
+    process.exit(1)
+  }
+}
+
+async function runGhAuthWithStream(args, mode = 'login') {
+  return new Promise((resolve, reject) => {
+    // Windows에서는 GH_BROWSER 값을 다르게 설정
+    const ghBrowser = process.platform === 'win32' ? 'cmd /c exit 0' : '/usr/bin/true'
+
+    const child = spawn('gh', args, {
+      env: { ...process.env, GH_BROWSER: ghBrowser },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+
+    let codeShown = false
+    let resolved = false
+
+    // 15초 내 코드 미감지 시 폴백
+    const timeout = setTimeout(async () => {
+      if (!codeShown && !resolved) {
+        child.kill()
+        try {
+          await fallbackAuthGuide(mode)
+          resolved = true
+          resolve()
+        } catch (err) {
+          reject(err)
+        }
+      }
+    }, 15000)
+
+    const handleOutput = (data) => {
+      const text = data.toString()
+
+      if (!codeShown) {
+        const match = text.match(/([A-Z0-9]{4}-[A-Z0-9]{4})/)
+        if (match) {
+          codeShown = true
+          const code = match[1]
+          p.note(
+            'Why this is required:\n' +
+            '  claude-session-tracker needs to create and manage GitHub Projects on your behalf.\n' +
+            '  This requires read/write access via OAuth — your credentials are never seen\n' +
+            '  or stored by claude-session-tracker. Login is handled entirely by GitHub.',
+            'Why is GitHub login required?'
+          )
+          p.log.step('A browser has been opened.')
+          p.log.info('  - Enter the code below in your browser.')
+          p.log.info('  - claude-session-tracker does not collect any information during this process.')
+          p.log.message('')
+          p.log.message(`  Your GitHub authentication code:  ${code}`)
+
+          openBrowser('https://github.com/login/device')
+
+          // gh가 "Press Enter" 대기 중이면 Enter 전송
+          child.stdin.write('\n')
+        }
+      }
+    }
+
+    child.stdout.on('data', handleOutput)
+    child.stderr.on('data', handleOutput)
+
+    child.on('close', (code) => {
+      clearTimeout(timeout)
+      if (resolved) return
+      resolved = true
+      if (code === 0) resolve()
+      else reject(new Error(`gh auth failed (exit code: ${code})`))
+    })
+
+    child.on('error', (err) => {
+      clearTimeout(timeout)
+      if (!resolved) {
+        resolved = true
+        reject(err)
+      }
+    })
+  })
+}
+
+async function runGhAuthLogin() {
+  return runGhAuthWithStream(['auth', 'login', '--web', '--scopes', 'project,repo'], 'login')
+}
+
+async function runGhAuthRefresh() {
+  return runGhAuthWithStream(['auth', 'refresh', '--scopes', 'project,repo'], 'refresh')
 }
 
 function fetchProjectMetadata(owner, number) {
@@ -772,11 +895,34 @@ async function main() {
     p.log.success('GitHub CLI installed successfully!')
   }
 
-  if (spawnSync('gh', ['auth', 'status'], { encoding: 'utf-8' }).status !== 0) {
-    envSpin.stop('GitHub CLI not authenticated')
-    p.log.warn('Please run this first:\n\n  gh auth login\n')
-    p.outro('Setup aborted.')
-    process.exit(1)
+  const authCheck = spawnSync('gh', ['auth', 'status'], { encoding: 'utf-8' })
+
+  if (authCheck.status !== 0) {
+    // 미인증 → 설치 플로우 안에서 로그인 유도
+    envSpin.stop('GitHub authentication required')
+    p.log.warn('GitHub authentication is required. Starting login...')
+
+    try {
+      await runGhAuthLogin()
+      p.log.success('GitHub login successful')
+    } catch (err) {
+      p.log.error(err.message)
+      p.outro('Setup aborted.')
+      process.exit(1)
+    }
+  } else if (!hasRequiredScopes()) {
+    // 인증됨 + 스코프 부족 → 스코프 보충
+    envSpin.stop('Missing required GitHub scopes')
+    p.log.warn('The scopes project and repo are required. Adding them now.')
+
+    try {
+      await runGhAuthRefresh()
+      p.log.success('Scopes added successfully')
+    } catch (err) {
+      p.log.error(err.message)
+      p.outro('Setup aborted.')
+      process.exit(1)
+    }
   }
   envSpin.stop('Environment looks good')
 
