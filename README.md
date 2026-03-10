@@ -27,7 +27,7 @@ npx claude-session-tracker
 
 Pick this if you don't already have a GitHub Project set up.
 
-The installer creates **everything** for you automatically:
+The installer creates **everything** for you automatically —
 - A private repository for storing session issues
 - A GitHub Project with all status options configured
 - Custom date fields (`Session Created`, `Last Active`)
@@ -39,7 +39,7 @@ All you do is pick a language and confirm. That's it.
 
 Pick this if you already have a GitHub Project you want to use.
 
-The wizard asks you ~6 questions:
+The wizard asks you ~6 questions —
 1. **GitHub Project Owner** — your username or org
 2. **GitHub Project Number** — grab it from your project URL
 3. **Status mapping** — connect your Project's Status field to our lifecycle stages
@@ -73,7 +73,7 @@ The GitHub API doesn't support modifying project views programmatically, so you'
 
 ## What It Does
 
-When you chat with Claude Code, the tracker automatically:
+When you chat with Claude Code, the tracker automatically
 
 - Creates a GitHub Issue for your session
 - Records every prompt you type
@@ -113,14 +113,14 @@ All hooks run async — tracking never slows you down.
 
 **Session URL notification**
 
-When a session starts, Claude tells you where it's tracked:
+When a session starts, Claude tells you where it's tracked —
 ```
 This session is being tracked at https://github.com/you/repo/issues/42
 ```
 
 **Smart title updates**
 
-Issue title auto-updates with your latest prompt:
+Issue title auto-updates with your latest prompt —
 ```
 [project-name] your latest prompt here...
 ```
@@ -178,13 +178,13 @@ Track everything Claude did, when it did it, and why. Useful for reviews and lea
 
 ## Configuration
 
-Edit `~/.claude/hooks/config.env` directly, or just re-run the installer:
+Edit `~/.claude/hooks/config.env` directly, or just re-run the installer
 
 ```bash
 npx claude-session-tracker
 ```
 
-Config file format:
+Config file format
 ```env
 GITHUB_PROJECT_OWNER=your-username
 GITHUB_PROJECT_NUMBER=1
@@ -202,7 +202,7 @@ DONE_TIMEOUT_SECS=1800
 
 ## Under the Hood
 
-Files we install to `~/.claude/hooks/`:
+Files we install to `~/.claude/hooks/`
 ```
 ~/.claude/hooks/
 ├── cst_github_utils.py              # Shared utilities
@@ -232,7 +232,7 @@ Removes everything we installed — hook scripts, configuration, state files and
 
 **Async hook completion messages appearing in Claude Code**
 
-You may see messages like this after every prompt/response:
+You may see messages like this after every prompt/response —
 ```
 ⎿  Async hook UserPromptSubmit completed
 ⎿  Async hook Stop completed
