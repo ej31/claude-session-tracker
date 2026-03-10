@@ -222,8 +222,8 @@ def generate_repo_id(repo_input: str) -> str:
                     return f"{parts[-2]}/{parts[-1]}"
                 if ":" in url:
                     return url.split(":")[-1]
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("git remote 조회 실패 (generate_repo_id): %s", e)
 
     return Path(repo_input).name
 
@@ -237,8 +237,8 @@ def resolve_repo_id(cwd: str) -> Optional[str]:
         )
         if result.returncode == 0:
             return generate_repo_id(result.stdout.strip())
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("git remote 조회 실패 (resolve_repo_id): %s", e)
     return Path(cwd).name
 
 
@@ -251,8 +251,8 @@ def _detect_branch(cwd: str) -> str:
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("git branch 조회 실패 (_detect_branch): %s", e)
     return ""
 
 
@@ -691,7 +691,8 @@ def _parse_diff_lines(diff_item) -> List[int]:
         patch = diff_item.diff
         if isinstance(patch, bytes):
             patch = patch.decode("utf-8", errors="replace")
-    except Exception:
+    except Exception as e:
+        log.debug("diff 파싱 실패 (_parse_diff_lines): %s", e)
         return []
 
     lines = []
