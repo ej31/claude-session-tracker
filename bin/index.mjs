@@ -267,7 +267,7 @@ function mergeContextOsHooks(settings, contextOsDir) {
 function runInitialBuild(cwd) {
   const dbPath = join(HOME, '.claude', 'context_os', 'db')
   const script = join(CONTEXT_OS_DIR, 'build_context_os.py')
-  const result = spawnSync('python3', [script, cwd], {
+  const result = spawnSync('python3', [script, '--repo', cwd], {
     stdio: 'inherit',
     env: { ...process.env, CONTEXT_OS_DB_PATH: dbPath },
     timeout: 300000,
