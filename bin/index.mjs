@@ -53,8 +53,99 @@ function onCancel() {
 }
 
 function hasCmd(cmd) {
-  const result = spawnSync('which', [cmd], { stdio: 'ignore' })
+  const isWin = process.platform === 'win32'
+  const finder = isWin ? 'where' : 'which'
+  // Windows에서 choco, scoop 등 .cmd 파일도 찾으려면 shell: true 필요
+  const result = spawnSync(finder, [cmd], { stdio: 'ignore', shell: isWin })
   return result.status === 0
+}
+
+// -- gh 자동 설치 -------------------------------------------------------------
+
+function detectLinuxDistro() {
+  try {
+    const content = readFileSync('/etc/os-release', 'utf-8')
+    const lines = Object.fromEntries(
+      content.split('\n')
+        .filter(l => l.includes('='))
+        .map(l => { const [k, ...v] = l.split('='); return [k.trim(), v.join('=').replace(/"/g, '').trim()] }),
+    )
+    const combined = `${lines.ID ?? ''} ${lines.ID_LIKE ?? ''}`.toLowerCase()
+    if (combined.includes('debian') || combined.includes('ubuntu')) return 'debian'
+    if (combined.includes('fedora') || combined.includes('rhel') || combined.includes('centos')) return 'fedora'
+    if (combined.includes('arch') || combined.includes('manjaro')) return 'arch'
+    if (combined.includes('opensuse') || combined.includes('suse')) return 'opensuse'
+    return lines.ID?.toLowerCase() || 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
+function runCmd(cmd, args) {
+  // Windows에서 winget, choco, scoop 등 .cmd/.bat 파일 실행을 위해 shell: true 필요
+  const result = spawnSync(cmd, args, { stdio: 'inherit', shell: process.platform === 'win32' })
+  return result.status === 0
+}
+
+async function tryInstallGh() {
+  const os = process.platform
+
+  if (os === 'darwin') {
+    if (!hasCmd('brew')) {
+      p.log.warn('Homebrew가 설치되어 있지 않습니다.')
+      p.log.info('https://brew.sh 에서 Homebrew를 먼저 설치한 후 brew install gh 를 실행하세요.')
+      return false
+    }
+    p.log.info('실행: brew install gh')
+    return runCmd('brew', ['install', 'gh'])
+  }
+
+  if (os === 'linux') {
+    const distro = detectLinuxDistro()
+    if (distro === 'debian') {
+      p.log.info('실행: sudo apt update && sudo apt install gh -y')
+      const updated = runCmd('sudo', ['apt', 'update'])
+      if (!updated) return false
+      return runCmd('sudo', ['apt', 'install', 'gh', '-y'])
+    }
+    if (distro === 'fedora') {
+      p.log.info('실행: sudo dnf install gh -y')
+      return runCmd('sudo', ['dnf', 'install', 'gh', '-y'])
+    }
+    if (distro === 'arch') {
+      p.log.info('실행: sudo pacman -S github-cli --noconfirm')
+      return runCmd('sudo', ['pacman', '-S', 'github-cli', '--noconfirm'])
+    }
+    if (distro === 'opensuse') {
+      p.log.info('실행: sudo zypper install -y github-cli')
+      return runCmd('sudo', ['zypper', 'install', '-y', 'github-cli'])
+    }
+    p.log.warn(`알 수 없는 Linux 배포판 (${distro}): 자동 설치를 지원하지 않습니다.`)
+    p.log.info('수동 설치: https://cli.github.com/manual/installation')
+    return false
+  }
+
+  if (os === 'win32') {
+    if (hasCmd('winget')) {
+      p.log.info('실행: winget install --id GitHub.cli -e --accept-source-agreements')
+      return runCmd('winget', ['install', '--id', 'GitHub.cli', '-e', '--accept-source-agreements'])
+    }
+    if (hasCmd('choco')) {
+      p.log.info('실행: choco install gh -y')
+      return runCmd('choco', ['install', 'gh', '-y'])
+    }
+    if (hasCmd('scoop')) {
+      p.log.info('실행: scoop install gh')
+      return runCmd('scoop', ['install', 'gh'])
+    }
+    p.log.warn('winget, Chocolatey, Scoop 중 하나가 필요합니다.')
+    p.log.info('수동 설치: https://cli.github.com/manual/installation')
+    return false
+  }
+
+  p.log.warn('지원하지 않는 OS입니다. gh를 수동으로 설치해주세요.')
+  p.log.info('https://cli.github.com/manual/installation')
+  return false
 }
 
 function ghGraphql(query, variables = {}) {
@@ -616,14 +707,32 @@ async function main() {
   const envSpin = p.spinner()
   envSpin.start('Checking environment...')
 
-  const missing = []
-  if (!hasCmd('python3')) missing.push('python3')
-  if (!hasCmd('gh')) missing.push('gh  ->  https://cli.github.com')
-  if (missing.length) {
+  if (!hasCmd('python3')) {
     envSpin.stop('Environment check failed')
-    p.log.error(`Missing required tools:\n${missing.map(m => `  - ${m}`).join('\n')}`)
+    p.log.error('Missing required tool: python3')
+    p.log.info('Install Python 3 from https://python.org')
     p.outro('Setup aborted.')
     process.exit(1)
+  }
+
+  if (!hasCmd('gh')) {
+    envSpin.stop('GitHub CLI (gh) not found')
+    const shouldInstall = await p.confirm({
+      message: 'GitHub CLI (gh) is required but not installed. Install it now?',
+    })
+    if (p.isCancel(shouldInstall) || !shouldInstall) {
+      p.log.info('Manual install: https://cli.github.com')
+      p.outro('Setup aborted.')
+      process.exit(1)
+    }
+    const installed = await tryInstallGh()
+    if (!installed || !hasCmd('gh')) {
+      p.log.error('Failed to install gh. Please install it manually and re-run setup.')
+      p.log.info('https://cli.github.com/manual/installation')
+      p.outro('Setup aborted.')
+      process.exit(1)
+    }
+    p.log.success('GitHub CLI installed successfully!')
   }
 
   if (spawnSync('gh', ['auth', 'status'], { encoding: 'utf-8' }).status !== 0) {
