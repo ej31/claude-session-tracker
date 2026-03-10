@@ -19,15 +19,27 @@ _Every prompt, every response, every decision — automatically saved to GitHub 
 
 ## Quick Start
 
-**Step 1: Install**
-
 ```bash
 npx claude-session-tracker
 ```
 
-**Step 2: Answer ~6 questions**
+### Auto Setup (Recommended)
 
-The wizard asks you:
+Pick this if you don't already have a GitHub Project set up.
+
+The installer creates **everything** for you automatically:
+- A private repository for storing session issues
+- A GitHub Project with all status options configured
+- Custom date fields (`Session Created`, `Last Active`)
+- Claude Code hooks, globally installed
+
+All you do is pick a language and confirm. That's it.
+
+### Manual Setup
+
+Pick this if you already have a GitHub Project you want to use.
+
+The wizard asks you ~6 questions:
 1. **GitHub Project Owner** — your username or org
 2. **GitHub Project Number** — grab it from your project URL
 3. **Status mapping** — connect your Project's Status field to our lifecycle stages
@@ -35,9 +47,7 @@ The wizard asks you:
 5. **Idle timeout** — how long before we auto-close (default: 30 mins)
 6. **Scope** — this project only, or go global
 
-**Step 3: Use Claude Code like normal**
-
-That's it. Everything flows to GitHub Projects automatically.
+Then use Claude Code like normal. Everything flows to GitHub Projects automatically.
 
 ---
 
