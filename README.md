@@ -29,7 +29,7 @@ Need the latest unreleased build? Nightly packages are available on npm and incl
 npx claude-session-tracker@nightly
 ```
 
-For details, see the [latest nightly release notes](https://github.com/ej31/claude-session-tracker/releases/tag/v2.5.1-nightly.20260311.99c3787.1).
+For details, see the [latest nightly release notes](https://github.com/ej31/claude-session-tracker/releases/tag/v2.5.1-nightly.20260311.99c3787.2).
 
 ### Auto Setup (Recommended)
 

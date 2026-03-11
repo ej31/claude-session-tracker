@@ -1,10 +1,10 @@
 {
   "name": "claude-session-tracker",
-  "version": "2.5.1-nightly.20260311.99c3787.1",
-  "description": "Claude Code 세션을 GitHub Projects에 자동으로 트래킹하는 hook 설치 도구",
+  "version": "2.5.1-nightly.20260311.99c3787.2",
+  "description": "Claude Code session tracker for GitHub Projects. Nightly Context Operator builds: npx claude-session-tracker@nightly",
   "type": "module",
   "bin": {
-    "claude-session-tracker": "./bin/index.mjs"
+    "claude-session-tracker": "bin/index.mjs"
   },
   "files": [
     "bin/",
@@ -27,13 +27,16 @@
     "claude-code",
     "github-projects",
     "hook",
-    "session-tracker"
+    "session-tracker",
+    "nightly",
+    "context-os",
+    "context-operator"
   ],
   "author": "ej31",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ej31/claude-session-tracker.git"
+    "url": "git+https://github.com/ej31/claude-session-tracker.git"
   },
   "homepage": "https://github.com/ej31/claude-session-tracker#readme",
   "bugs": {
