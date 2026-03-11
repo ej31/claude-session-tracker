@@ -23,6 +23,14 @@ _Every prompt, every response, every decision — automatically saved to GitHub 
 npx claude-session-tracker
 ```
 
+Need the latest unreleased build? Nightly packages are available on npm and include the new Context Operator local context-restore flow:
+
+```bash
+npx claude-session-tracker@nightly
+```
+
+For details, see the [v2.5.1 nightly release notes](https://github.com/ej31/claude-session-tracker/releases/tag/v2.5.1-nightly.20260311.99c3787).
+
 ### Auto Setup (Recommended)
 
 Pick this if you don't already have a GitHub Project set up.
