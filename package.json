@@ -1,6 +1,6 @@
 {
   "name": "claude-session-tracker",
-  "version": "2.5.1-nightly.20260311.99c3787.2",
+  "version": "2.5.1-nightly.20260312.1",
   "description": "Claude Code session tracker for GitHub Projects. Nightly Context Operator builds: npx claude-session-tracker@nightly",
   "type": "module",
   "bin": {
