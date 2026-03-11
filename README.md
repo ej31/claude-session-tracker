@@ -11,7 +11,7 @@
 
 **Never lose a Claude Code conversation again.**
 
-_Every prompt, every response, every decision — automatically saved to GitHub Projects._
+_Every prompt, every response, every decision — automatically saved to GitHub Projects, with optional local Context OS restoration after compact events._
 
 [Quick Start](#quick-start) • [What It Does](#what-it-does) • [How It Works](#how-it-works) • [Use Cases](#use-cases) • [Configuration](#configuration)
 
@@ -29,7 +29,7 @@ Need the latest unreleased build? Nightly packages are available on npm and incl
 npx claude-session-tracker@nightly
 ```
 
-For details, see the [v2.5.1 nightly release notes](https://github.com/ej31/claude-session-tracker/releases/tag/v2.5.1-nightly.20260311.99c3787).
+For details, see the [latest nightly release notes](https://github.com/ej31/claude-session-tracker/releases/tag/v2.5.1-nightly.20260311.99c3787.1).
 
 ### Auto Setup (Recommended)
 
@@ -40,20 +40,22 @@ The installer creates **everything** for you automatically —
 - A GitHub Project with all status options configured
 - Custom date fields (`Session Created`, `Last Active`)
 - Claude Code hooks, globally installed
+- Optional Context OS local graph restore (worktree-scoped, fail-closed)
 
-All you do is pick a language and confirm. That's it.
+All you do is pick a language, choose whether to enable Context OS, and confirm.
 
 ### Manual Setup
 
 Pick this if you already have a GitHub Project you want to use.
 
-The wizard asks you ~6 questions —
+The wizard asks you ~7 questions —
 1. **GitHub Project Owner** — your username or org
 2. **GitHub Project Number** — grab it from your project URL
 3. **Status mapping** — connect your Project's Status field to our lifecycle stages
 4. **Default repo** — fallback when there's no git remote
 5. **Idle timeout** — how long before we auto-close (default: 30 mins)
 6. **Scope** — this project only, or go global
+7. **Context OS** — whether to enable local graph-based context restore after compact
 
 Then use Claude Code like normal. Everything flows to GitHub Projects automatically.
 
@@ -91,8 +93,27 @@ When you chat with Claude Code, the tracker automatically
 - Auto-assigns issues to you
 - Saves timestamps for everything
 - Auto-closes idle sessions (configurable)
+- Optionally builds a local Context OS graph for the current worktree
+- Optionally restores recent files, symbols, and dependencies after Claude compacts
+- Fails closed when graph freshness can't be proven, instead of injecting stale symbol context
 
 No setup after install. Just use Claude Code like normal.
+
+## Context OS Safety Model
+
+When enabled, Context OS stores its graph **outside the repository** at:
+
+```text
+~/.claude/context_os/scopes/<worktree-hash>/db
+```
+
+Key properties:
+
+- The graph is **per worktree**, not one global DB for every checkout.
+- Two worktrees of the same repo get different scope directories.
+- Freshness is checked against the current worktree root, branch, HEAD, and source fingerprint.
+- If freshness cannot be proven, Context OS omits symbol and dependency context instead of risking stale injection.
+- File-level facts are preferred. Symbol-level facts (`ABOUT`, `MODIFIED_BY`) are only created when the current active graph resolves them safely.
 
 ---
 
@@ -223,6 +244,39 @@ Files we install to `~/.claude/hooks/`
 ├── hooks.log                        # Execution logs
 └── state/                           # Per-session state (JSON)
 ```
+
+Optional Context OS files installed to `~/.claude/context_os/`
+```
+~/.claude/context_os/
+├── build_context_os.py
+├── context_briefing.py
+├── evaluate.py
+├── kuzu_ingest_edit.py
+├── kuzu_ingest_turn.py
+├── requirements.txt
+└── scopes/
+    └── <worktree-hash>/
+        ├── db
+        ├── meta.json
+        └── lock
+```
+
+## Manual Validation
+
+If you want to verify worktree isolation manually in real Claude Code:
+
+1. Create two worktrees from the same repo, for example `main` and `feature`.
+2. In the `main` worktree, add a unique probe symbol such as `base_only_context_probe()`.
+3. In the `feature` worktree, add a different probe symbol such as `feature_only_context_probe()`.
+4. Run Claude Code separately inside each worktree and ask it to inspect or edit the corresponding probe file.
+5. In each conversation, make Claude mention the probe symbol explicitly using backticks or function-call syntax such as `` `feature_only_context_probe` `` or `feature_only_context_probe()`.
+6. Trigger enough activity for the hooks to run, then inspect the next compact briefing.
+
+Expected result:
+
+- The `feature` worktree must never receive `base_only_context_probe`.
+- The `main` worktree must never receive `feature_only_context_probe`.
+- If a probe symbol is renamed or deleted out of band, the next briefing should either show the new symbol or omit symbol context entirely. It must not re-inject the removed symbol.
 
 ---
 

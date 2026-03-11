@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Context OS - PostToolUse hook
+"""Context OS - PostToolUse hook.
 
-Edit/Write 도구 사용 시 수정된 심볼을 추적하여
-Turn → Symbol MODIFIED_BY 관계를 생성한다.
+Edit/Write events refresh the current worktree graph and then attach only facts
+that can be proven safely:
+- always record the touched file when it exists in the active graph
+- only record MODIFIED_BY when the file maps to exactly one active symbol
 """
 from __future__ import annotations
 
@@ -12,37 +14,58 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from build_context_os import get_db_connection, get_or_create_session, setup_logger
+from build_context_os import (
+    ensure_scope_current,
+    get_active_symbols_by_file,
+    get_db_connection,
+    get_or_create_session,
+    setup_logger,
+    scope_lock,
+)
 
 logger = setup_logger("context-os-edit")
 
 
 def _find_affected_symbols(conn, file_path: str) -> list:
-    """해당 파일에 속한 모든 심볼 조회"""
-    result = conn.execute(
-        "MATCH (s:Symbol) WHERE s.file_path = $fp "
-        "RETURN s.id, s.name",
-        parameters={"fp": file_path},
-    )
-    symbols = []
-    while result.has_next():
-        row = result.get_next()
-        symbols.append({"id": row[0], "name": row[1]})
-    return symbols
+    """Return active symbols for a file in the current scope."""
+    return get_active_symbols_by_file(conn, file_path)
 
 
 def _resolve_relative_path(file_path: str, cwd: str) -> str:
-    """절대 경로를 cwd 기준 상대 경로로 변환"""
-    if cwd and file_path.startswith(cwd):
-        return file_path[len(cwd):].lstrip("/")
-    return Path(file_path).name
+    """Normalize a path to a worktree-relative path when possible."""
+    path = Path(file_path)
+    if not path.is_absolute():
+        return path.as_posix()
+
+    if cwd:
+        try:
+            return path.resolve().relative_to(Path(cwd).resolve()).as_posix()
+        except ValueError:
+            return path.name
+    return path.name
+
+
+def _attach_touched_file(conn, turn_id: str, file_path: str) -> bool:
+    result = conn.execute(
+        "MATCH (f:File {path: $fp}) WHERE f.is_active = true RETURN f.path",
+        parameters={"fp": file_path},
+    )
+    if not result.has_next():
+        return False
+
+    conn.execute(
+        "MATCH (t:Turn {id: $tid}), (f:File {path: $fp}) "
+        "MERGE (t)-[:TOUCHED_FILE]->(f)",
+        parameters={"tid": turn_id, "fp": file_path},
+    )
+    return True
 
 
 def main() -> int:
     try:
         input_data = json.load(sys.stdin)
     except json.JSONDecodeError as e:
-        logger.error(f"stdin JSON 파싱 실패: {e}")
+        logger.error("stdin JSON 파싱 실패: %s", e)
         return 0
 
     tool_name = input_data.get("tool_name", "")
@@ -52,67 +75,71 @@ def main() -> int:
     session_id = input_data.get("session_id", "")
     tool_input = input_data.get("tool_input", {})
     file_path = tool_input.get("file_path", "")
-    if not session_id or not file_path:
-        return 0
-
     cwd = input_data.get("cwd", "")
-
-    try:
-        db, conn = get_db_connection()
-    except FileNotFoundError:
-        logger.debug("Context OS DB 없음, 건너뜀")
-        return 0
-    except Exception as e:
-        logger.error(f"DB 연결 실패: {e}")
+    if not session_id or not file_path or not cwd:
         return 0
 
-    # Session 노드 생성/조회 + Repository 연결
-    get_or_create_session(conn, session_id, cwd)
-
-    # 절대 경로 → 상대 경로 변환
     rel_path = _resolve_relative_path(file_path, cwd)
 
-    # 해당 파일의 심볼 조회
-    affected = _find_affected_symbols(conn, rel_path)
-    if not affected:
-        logger.debug(f"수정 파일에 매칭되는 심볼 없음: {rel_path}")
-        return 0
+    try:
+        with scope_lock(cwd):
+            graph_ready = ensure_scope_current(cwd, include_git_history=False)
 
-    # Turn 노드 생성 (edit 타입)
-    timestamp = datetime.now().isoformat()
-    turn_id = f"{session_id}:{timestamp}"
+            try:
+                _, conn = get_db_connection(cwd=cwd)
+            except FileNotFoundError:
+                logger.debug("Context OS DB 없음, 건너뜀")
+                return 0
 
-    conn.execute(
-        "MERGE (t:Turn {id: $id}) SET t.session_id = $sid, t.timestamp = $ts, "
-        "t.type = $type, t.summary = $summary",
-        parameters={
-            "id": turn_id,
-            "sid": session_id,
-            "ts": timestamp,
-            "type": "edit",
-            "summary": f"{tool_name}: {rel_path}",
-        },
-    )
+            get_or_create_session(conn, session_id, cwd)
 
-    # Session → HAS_TURN 관계
-    conn.execute(
-        "MATCH (s:Session {id: $sid}), (t:Turn {id: $tid}) "
-        "MERGE (s)-[:HAS_TURN]->(t)",
-        parameters={"sid": session_id, "tid": turn_id},
-    )
+            timestamp = datetime.now().isoformat()
+            turn_id = f"{session_id}:{timestamp}"
+            conn.execute(
+                "MERGE (t:Turn {id: $id}) SET t.session_id = $sid, t.timestamp = $ts, "
+                "t.type = $type, t.summary = $summary",
+                parameters={
+                    "id": turn_id,
+                    "sid": session_id,
+                    "ts": timestamp,
+                    "type": "edit",
+                    "summary": f"{tool_name}: {rel_path}",
+                },
+            )
+            conn.execute(
+                "MATCH (s:Session {id: $sid}), (t:Turn {id: $tid}) "
+                "MERGE (s)-[:HAS_TURN]->(t)",
+                parameters={"sid": session_id, "tid": turn_id},
+            )
 
-    # MODIFIED_BY 관계 생성
-    for sym in affected:
-        conn.execute(
-            "MATCH (t:Turn {id: $tid}), (s:Symbol {id: $sid}) "
-            "MERGE (t)-[:MODIFIED_BY]->(s)",
-            parameters={"tid": turn_id, "sid": sym["id"]},
-        )
+            touched = _attach_touched_file(conn, turn_id, rel_path)
+            if not graph_ready:
+                logger.warning("graph freshness 미검증 상태라 MODIFIED_BY 생략: %s", rel_path)
+                return 0
 
-    logger.info(
-        f"Edit 추적 완료: {rel_path}, "
-        f"영향받은 심볼 {len(affected)}개"
-    )
+            affected = _find_affected_symbols(conn, rel_path)
+            if len(affected) == 1:
+                conn.execute(
+                    "MATCH (t:Turn {id: $tid}), (s:Symbol {id: $sid}) "
+                    "MERGE (t)-[:MODIFIED_BY]->(s)",
+                    parameters={"tid": turn_id, "sid": affected[0]["id"]},
+                )
+                logger.info(
+                    "Edit 추적 완료: %s, TOUCHED_FILE=%s, MODIFIED_BY=%s",
+                    rel_path,
+                    touched,
+                    affected[0]["name"],
+                )
+            else:
+                logger.info(
+                    "Edit 추적 완료: %s, TOUCHED_FILE=%s, MODIFIED_BY 생략(활성 심볼 %s개)",
+                    rel_path,
+                    touched,
+                    len(affected),
+                )
+    except Exception as e:
+        logger.error("Edit 추적 실패: %s", e)
+
     return 0
 
 

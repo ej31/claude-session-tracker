@@ -75,7 +75,7 @@ class TestCmdCheckpoint:
         db, conn = seeded_db
         monkeypatch.setattr(eval_mod, "EVAL_DIR", tmp_path)
         monkeypatch.setattr(
-            "evaluate.get_db_connection", lambda: (db, conn),
+            "evaluate.get_db_connection", lambda **kwargs: (db, conn),
         )
 
         args = argparse.Namespace(command="checkpoint")
@@ -118,7 +118,7 @@ class TestCmdCompare:
         db, conn = seeded_db
         monkeypatch.setattr(eval_mod, "EVAL_DIR", tmp_path)
         monkeypatch.setattr(
-            "evaluate.get_db_connection", lambda: (db, conn),
+            "evaluate.get_db_connection", lambda **kwargs: (db, conn),
         )
 
         # 먼저 checkpoint 저장

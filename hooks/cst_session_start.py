@@ -129,7 +129,7 @@ def main() -> int:
             "status": "registered",
             "created_at": datetime.now().isoformat(),
         })
-        logger.info(f"item 생성 완료: {item_id} repo={repo}")
+        logger.info(f"item 생성 완료: {item_id} repo={notes_repo}")
 
         # Created 날짜 설정
         created_fid = _created_field_id()
@@ -142,7 +142,7 @@ def main() -> int:
                 logger.error(f"Created 필드 설정 실패: {e}")
 
         # 사용자에게 이슈 URL 안내 (stdout → Claude가 system-reminder로 수신)
-        issue_url = f"https://github.com/{repo}/issues/{issue_number}"
+        issue_url = f"https://github.com/{notes_repo}/issues/{issue_number}"
         print(
             f"This session is being tracked at {issue_url} — "
             f"Please inform the user that this conversation is being recorded at this URL. "

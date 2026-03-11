@@ -55,6 +55,7 @@ def _get_recent_symbols(conn) -> list:
     """DB에서 최근 수정된 심볼 조회"""
     result = conn.execute(
         "MATCH (t:Turn)-[:MODIFIED_BY]->(s:Symbol) "
+        "WHERE s.is_active = true "
         "WITH s, max(t.timestamp) AS latest "
         "RETURN s.name, s.file_path, s.type "
         "ORDER BY latest DESC LIMIT 20"
@@ -70,6 +71,7 @@ def _get_briefing_symbols(conn) -> set:
     """DB에서 브리핑에 포함될 심볼 이름 조회"""
     result = conn.execute(
         "MATCH (t:Turn)-[:ABOUT|MODIFIED_BY]->(s:Symbol) "
+        "WHERE s.is_active = true "
         "RETURN DISTINCT s.name "
         "LIMIT 50"
     )
@@ -84,7 +86,7 @@ def _get_briefing_symbols(conn) -> set:
 def cmd_checkpoint(args: argparse.Namespace) -> int:
     """Ground truth 저장 (현재 git diff + 최근 수정 심볼)"""
     try:
-        db, conn = get_db_connection()
+        db, conn = get_db_connection(cwd=".")
     except Exception as e:
         logger.error(f"DB 연결 실패: {e}")
         return 1
@@ -151,7 +153,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        db, conn = get_db_connection()
+        db, conn = get_db_connection(cwd=".")
         briefing_symbols = _get_briefing_symbols(conn)
     except Exception as e:
         logger.error(f"브리핑 심볼 조회 실패: {e}")

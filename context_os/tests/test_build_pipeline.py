@@ -1,18 +1,20 @@
 """build_context_os.py 단위/통합 테스트"""
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from build_context_os import (
+    build_context_os,
     extract_calls,
     extract_symbols,
     generate_mock_intent,
     get_dependency_chain,
+    get_scope_db_path,
     get_session_context,
     get_symbol_impact,
     init_db,
@@ -193,3 +195,83 @@ class TestFullPipelineE2E:
         for rel in ["HAS_FILE", "CONTAINS", "HAS_COMMIT"]:
             result = conn.execute(f"MATCH ()-[:{rel}]->() RETURN count(*)")
             assert result.get_next()[0] > 0
+
+
+@skip_no_ast_grep
+class TestScopedSafety:
+    def test_rebuild_marks_removed_symbol_inactive(self, tmp_repo):
+        build_context_os(str(tmp_repo), include_git_history=False)
+        db_path = get_scope_db_path(str(tmp_repo))
+
+        hello_py = tmp_repo / "hello.py"
+        hello_py.write_text(
+            'def greet(name):\n'
+            '    return f"Hello, {name}"\n'
+            '\n'
+            'class Greeter:\n'
+            '    def say_hello(self):\n'
+            '        return greet("world")\n',
+        )
+
+        build_context_os(str(tmp_repo), include_git_history=False)
+        _, conn = init_db(db_path)
+
+        result = conn.execute(
+            "MATCH (s:Symbol {id: 'hello.py:farewell:5'}) RETURN s.is_active"
+        )
+        assert result.has_next()
+        assert result.get_next()[0] is False
+
+    def test_worktree_scopes_do_not_mix_symbols(self, tmp_repo, tmp_path):
+        subprocess.run(
+            ["git", "branch", "feature-worktree"],
+            cwd=tmp_repo,
+            capture_output=True,
+            check=True,
+        )
+        feature_dir = tmp_path / "feature-worktree"
+        subprocess.run(
+            ["git", "worktree", "add", str(feature_dir), "feature-worktree"],
+            cwd=tmp_repo,
+            capture_output=True,
+            check=True,
+        )
+
+        feature_hello = feature_dir / "hello.py"
+        feature_hello.write_text(
+            'def feature_only(name):\n'
+            '    return f"Feature, {name}"\n'
+            '\n'
+            'class Greeter:\n'
+            '    def say_hello(self):\n'
+            '        return feature_only("world")\n',
+        )
+
+        build_context_os(str(tmp_repo), include_git_history=False)
+        build_context_os(str(feature_dir), include_git_history=False)
+
+        base_db_path = get_scope_db_path(str(tmp_repo))
+        feature_db_path = get_scope_db_path(str(feature_dir))
+        assert base_db_path != feature_db_path
+
+        _, base_conn = init_db(base_db_path)
+        _, feature_conn = init_db(feature_db_path)
+
+        base_result = base_conn.execute(
+            "MATCH (s:Symbol) WHERE s.is_active = true RETURN DISTINCT s.name"
+        )
+        base_names = set()
+        while base_result.has_next():
+            base_names.add(base_result.get_next()[0])
+
+        feature_result = feature_conn.execute(
+            "MATCH (s:Symbol) WHERE s.is_active = true RETURN DISTINCT s.name"
+        )
+        feature_names = set()
+        while feature_result.has_next():
+            feature_names.add(feature_result.get_next()[0])
+
+        assert "greet" in base_names
+        assert "feature_only" not in base_names
+        assert "feature_only" in feature_names
+        assert "greet" not in feature_names

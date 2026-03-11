@@ -41,6 +41,7 @@ const CONTEXT_OS_SRC = join(__dirname, '..', 'context_os')
 const CONTEXT_OS_FILES = [
   'build_context_os.py',
   'context_briefing.py',
+  'evaluate.py',
   'kuzu_ingest_edit.py',
   'kuzu_ingest_turn.py',
   'requirements.txt',
@@ -265,11 +266,9 @@ function mergeContextOsHooks(settings, contextOsDir) {
 }
 
 function runInitialBuild(cwd) {
-  const dbPath = join(HOME, '.claude', 'context_os', 'db')
   const script = join(CONTEXT_OS_DIR, 'build_context_os.py')
   const result = spawnSync('python3', [script, '--repo', cwd], {
     stdio: 'inherit',
-    env: { ...process.env, CONTEXT_OS_DB_PATH: dbPath },
     timeout: 300000,
   })
   return result.status === 0
@@ -521,7 +520,7 @@ function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId,
     chmodSync(join(HOOKS_DIR, f), 0o755)
   }
 
-  // Context OS 파일 복사 및 초기 DB 구축
+  // Context OS 파일 복사
   if (contextOs) {
     copyContextOsFiles()
     runInitialBuild(process.cwd())
@@ -629,8 +628,6 @@ async function uninstall() {
 
   // Context OS 정리
   if (existsSync(CONTEXT_OS_DIR)) { rmSync(CONTEXT_OS_DIR, { recursive: true }); removed++ }
-  const contextOsDbDir = join(HOME, '.claude', 'context_os', 'db')
-  if (existsSync(contextOsDbDir)) { rmSync(contextOsDbDir, { recursive: true }); removed++ }
 
   const settingsPaths = [
     join(HOME, '.claude', 'settings.json'),

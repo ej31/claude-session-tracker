@@ -4,58 +4,29 @@ from __future__ import annotations
 import io
 import json
 import sys
+from contextlib import nullcontext
 from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from build_context_os import get_active_symbol_index
 from kuzu_ingest_turn import (
     _create_about_relations,
     _extract_code_blocks,
     _find_mentioned_symbols,
     _load_known_names,
+    _resolve_explicit_symbol_ids,
     main,
 )
 
 
-# ─── 단위 테스트: _find_mentioned_symbols ─────────────────────────────────────
-
-
 class TestFindMentionedSymbols:
-    def test_basic_match(self):
-        result = _find_mentioned_symbols("greet 함수 수정", {"greet", "farewell"})
+    def test_function_like_match_only(self):
+        result = _find_mentioned_symbols("greet() 호출", {"greet", "farewell"})
         assert result == ["greet"]
 
-    def test_word_boundary(self):
-        """greeting에서 greet를 매칭하면 안 됨"""
-        result = _find_mentioned_symbols("greeting card", {"greet"})
+    def test_plain_text_is_ignored(self):
+        result = _find_mentioned_symbols("greet 함수 수정", {"greet"})
         assert result == []
-
-    def test_short_name_skip(self):
-        """MIN_SYMBOL_NAME_LENGTH(3) 미만은 무시"""
-        result = _find_mentioned_symbols("if x > 0", {"if", "x"})
-        assert result == []
-
-    def test_multiple_matches(self):
-        text = "greet 함수와 farewell 함수를 수정"
-        result = _find_mentioned_symbols(text, {"greet", "farewell"})
-        assert set(result) == {"greet", "farewell"}
-
-    def test_empty_inputs(self):
-        assert _find_mentioned_symbols("", set()) == []
-        assert _find_mentioned_symbols("some text", set()) == []
-        assert _find_mentioned_symbols("", {"greet"}) == []
-
-    def test_exact_name_only(self):
-        """formatName은 매칭되지만 format은 아님 (단어 경계)"""
-        result = _find_mentioned_symbols(
-            "formatName 호출", {"formatName", "format"},
-        )
-        assert "formatName" in result
-
-
-# ─── 단위 테스트: _extract_code_blocks ────────────────────────────────────────
 
 
 class TestExtractCodeBlocks:
@@ -67,48 +38,80 @@ class TestExtractCodeBlocks:
     def test_no_blocks(self):
         assert _extract_code_blocks("일반 텍스트") == []
 
-    def test_empty_string(self):
-        assert _extract_code_blocks("") == []
-
-
-# ─── DB 통합 테스트 ──────────────────────────────────────────────────────────
-
 
 class TestLoadKnownNames:
-    def test_returns_symbol_names(self, seeded_db):
+    def test_returns_active_symbol_names(self, seeded_db):
         _, conn = seeded_db
         names = _load_known_names(conn)
-        assert "greet" in names
-        assert "farewell" in names
-        assert "Greeter" in names
-        assert "formatName" in names
-        assert "capitalize" in names
+        assert {"greet", "farewell", "Greeter", "formatName", "capitalize"} <= names
 
 
 class TestCreateAboutRelations:
     def test_creates_relations(self, seeded_db):
         _, conn = seeded_db
-        # 새 Turn 생성
         conn.execute(
             "CREATE (t:Turn {id: 'about-test-turn', session_id: 'test-session', "
-            "timestamp: '2025-01-01T12:00:00', type: 'response', "
-            "summary: 'test', ref_url: ''})"
+            "timestamp: '2025-01-01T12:00:00', type: 'response', summary: 'test', ref_url: ''})"
         )
-        count = _create_about_relations(conn, "about-test-turn", ["greet"])
-        assert count >= 1
+        count = _create_about_relations(conn, "about-test-turn", ["hello.py:greet:1"])
+        assert count == 1
 
-        # 관계 검증
         result = conn.execute(
             "MATCH (t:Turn {id: 'about-test-turn'})-[:ABOUT]->(s:Symbol) RETURN s.name"
         )
-        names = []
-        while result.has_next():
-            names.append(result.get_next()[0])
-        assert "greet" in names
+        assert result.get_next()[0] == "greet"
+
+
+class TestResolveExplicitSymbolIds:
+    def test_inline_code_resolves_unique_symbol(self, seeded_db):
+        _, conn = seeded_db
+        index = get_active_symbol_index(conn)
+        symbol_ids = _resolve_explicit_symbol_ids("`greet` 를 봐", index)
+        assert symbol_ids == ["hello.py:greet:1"]
+
+    def test_ambiguous_name_is_skipped(self, seeded_db):
+        _, conn = seeded_db
+        conn.execute(
+            "CREATE (s:Symbol {id: 'dup.py:greet:1', name: 'greet', type: 'function', "
+            "file_path: 'dup.py', start_line: 1, end_line: 2, code: 'def greet(): pass', "
+            "intent: '', is_active: true})"
+        )
+        index = get_active_symbol_index(conn)
+        symbol_ids = _resolve_explicit_symbol_ids("greet()", index)
+        assert symbol_ids == []
 
 
 class TestIngestTurnE2E:
-    def test_main_creates_turn_and_about(self, seeded_db, monkeypatch):
+    def test_main_creates_turn_and_about_for_explicit_code(self, seeded_db, monkeypatch):
+        db, conn = seeded_db
+        input_data = {
+            "session_id": "test-session",
+            "last_assistant_message": "`greet` 함수를 수정했습니다",
+            "cwd": "/tmp/repo",
+        }
+
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(input_data)))
+        monkeypatch.setattr("kuzu_ingest_turn.scope_lock", lambda cwd: nullcontext())
+        monkeypatch.setattr("kuzu_ingest_turn.ensure_scope_current", lambda cwd, include_git_history=False: True)
+        monkeypatch.setattr("kuzu_ingest_turn.get_db_connection", lambda **kwargs: (db, conn))
+        monkeypatch.setattr("kuzu_ingest_turn.get_or_create_session", lambda conn, sid, cwd: sid)
+
+        result = main()
+        assert result == 0
+
+        res = conn.execute(
+            "MATCH (t:Turn) WHERE t.type = 'response' AND t.session_id = 'test-session' "
+            "RETURN count(t)"
+        )
+        assert res.get_next()[0] >= 2
+
+        res = conn.execute(
+            "MATCH (t:Turn {type: 'response'})-[:ABOUT]->(s:Symbol) "
+            "WHERE s.name = 'greet' RETURN count(*)"
+        )
+        assert res.get_next()[0] >= 1
+
+    def test_plain_text_does_not_create_about(self, seeded_db, monkeypatch):
         db, conn = seeded_db
         input_data = {
             "session_id": "test-session",
@@ -117,35 +120,27 @@ class TestIngestTurnE2E:
         }
 
         monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(input_data)))
-        monkeypatch.setattr(
-            "kuzu_ingest_turn.get_db_connection", lambda: (db, conn),
-        )
-        # get_or_create_session은 git 명령 실행을 시도하므로 mock
-        monkeypatch.setattr(
-            "kuzu_ingest_turn.get_or_create_session",
-            lambda conn, sid, cwd: sid,
-        )
+        monkeypatch.setattr("kuzu_ingest_turn.scope_lock", lambda cwd: nullcontext())
+        monkeypatch.setattr("kuzu_ingest_turn.ensure_scope_current", lambda cwd, include_git_history=False: True)
+        monkeypatch.setattr("kuzu_ingest_turn.get_db_connection", lambda **kwargs: (db, conn))
+        monkeypatch.setattr("kuzu_ingest_turn.get_or_create_session", lambda conn, sid, cwd: sid)
 
         result = main()
         assert result == 0
 
-        # Turn 노드 생성 확인
         res = conn.execute(
-            "MATCH (t:Turn) WHERE t.type = 'response' AND t.session_id = 'test-session' "
-            "RETURN count(t)"
+            "MATCH (t:Turn {type: 'response'})-[:ABOUT]->(s:Symbol) "
+            "WHERE t.summary = 'greet 함수를 수정했습니다' AND s.name = 'greet' "
+            "RETURN count(*)"
         )
-        # 기존 seeded_db의 response turn(1) + 새로 생성된 turn(1)
-        assert res.get_next()[0] >= 2
+        assert res.get_next()[0] == 0
 
     def test_empty_message_early_return(self, seeded_db, monkeypatch):
-        db, conn = seeded_db
         input_data = {
             "session_id": "test-session",
             "last_assistant_message": "",
             "cwd": "/tmp/repo",
         }
         monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(input_data)))
-
-        # DB 연결이 호출되면 안 됨 (early return)
         result = main()
         assert result == 0

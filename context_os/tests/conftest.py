@@ -125,8 +125,14 @@ def seeded_db(tmp_db):
     )
 
     # Files
-    conn.execute("CREATE (f:File {path: 'hello.py', language: 'python', size: 200})")
-    conn.execute("CREATE (f:File {path: 'utils.js', language: 'javascript', size: 150})")
+    conn.execute(
+        "CREATE (f:File {path: 'hello.py', language: 'python', size: 200, "
+        "is_active: true})"
+    )
+    conn.execute(
+        "CREATE (f:File {path: 'utils.js', language: 'javascript', size: 150, "
+        "is_active: true})"
+    )
 
     # Repository → HAS_FILE
     conn.execute(
@@ -154,7 +160,8 @@ def seeded_db(tmp_db):
     for sid, name, stype, fp, sl, el, code, intent in symbols:
         conn.execute(
             "CREATE (s:Symbol {id: $id, name: $name, type: $type, "
-            "file_path: $fp, start_line: $sl, end_line: $el, code: $code, intent: $intent})",
+            "file_path: $fp, start_line: $sl, end_line: $el, code: $code, intent: $intent, "
+            "is_active: true})",
             parameters={
                 "id": sid, "name": name, "type": stype,
                 "fp": fp, "sl": sl, "el": el, "code": code, "intent": intent,
@@ -258,6 +265,11 @@ def seeded_db(tmp_db):
     conn.execute(
         "MATCH (t:Turn {id: $tid}), (s:Symbol {id: 'utils.js:formatName:2'}) "
         "CREATE (t)-[:MODIFIED_BY]->(s)",
+        parameters={"tid": f"test-session:{ts2}"},
+    )
+    conn.execute(
+        "MATCH (t:Turn {id: $tid}), (f:File {path: 'utils.js'}) "
+        "CREATE (t)-[:TOUCHED_FILE]->(f)",
         parameters={"tid": f"test-session:{ts2}"},
     )
 
