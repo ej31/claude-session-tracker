@@ -26,7 +26,7 @@ npx claude-session-tracker
 > [!NOTE]
 > Nightly builds are published to npm before the next stable release.
 > Use `npx claude-session-tracker@nightly` to try the latest Context Operator changes early.
-> For details, see the [latest nightly release notes](https://github.com/ej31/claude-session-tracker/releases/tag/v2.5.1-nightly.20260312.1).
+> For details, see the [latest nightly release notes](https://github.com/ej31/claude-session-tracker/releases).
 
 ### Auto Setup (Recommended)
 
