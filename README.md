@@ -16,6 +16,17 @@ _Every prompt, every response, every decision — automatically saved to GitHub 
 [Quick Start](#quick-start) • [What It Does](#what-it-does) • [How It Works](#how-it-works) • [Use Cases](#use-cases) • [Configuration](#configuration)
 
 ---
+## What it does
+
+This tool automatically creates a dedicated GitHub repository for storing Claude Code sessions, then sets up GitHub Projects inside that repository.
+
+Each Claude Code session is assigned to its own issue, making it easy to revisit and review past sessions at any time. Every issue stores both your prompts and Claude’s responses, so the full context of each session is preserved and searchable later.
+
+## Demo
+
+<p>
+  <img alt="GitHub Issue with session comments" src="https://github.com/user-attachments/assets/0f8ca148-a5bc-4c08-ac45-93aafc407962" />
+</p>
 
 ## Quick Start
 
@@ -40,33 +51,18 @@ The installer creates **everything** for you automatically —
 
 All you do is pick a language and confirm. That's it.
 
-### Manual Setup
-
-Pick this if you already have a GitHub Project you want to use.
-
-The wizard asks you ~6 questions —
-1. **GitHub Project Owner** — your username or org
-2. **GitHub Project Number** — grab it from your project URL
-3. **Status mapping** — connect your Project's Status field to our lifecycle stages
-4. **Default repo** — fallback when there's no git remote
-5. **Idle timeout** — how long before we auto-close (default: 30 mins)
-6. **Scope** — this project only, or go global
-
-Then use Claude Code like normal. Everything flows to GitHub Projects automatically.
-
 ---
 
-## Demo
+### Key features
 
-<p>
-  <img alt="GitHub Projects board view" src="https://github.com/user-attachments/assets/0705f26d-9517-4186-9533-217a166bd177" />
-</p>
+- Automatically creates a dedicated repository for Claude Code session history
+- Sets up GitHub Projects for structured session tracking
+- Assigns one issue per Claude Code session
+- Stores both user prompts and Claude responses
+- Makes it easy to revisit, read, and manage past sessions whenever needed
 
-<p>
-  <img alt="GitHub Issue with session comments" src="https://github.com/user-attachments/assets/0f8ca148-a5bc-4c08-ac45-93aafc407962" />
-</p>
 
-### Custom date fields
+## Custom date fields
 
 Auto setup creates two custom date fields in your project — `Created` (set when a session starts) and `Last Active` (updated on every prompt).
 
@@ -222,6 +218,20 @@ Files we install to `~/.claude/hooks/`
 ```
 
 ---
+
+### Manual Setup
+
+Pick this if you already have a GitHub Project you want to use.
+
+The wizard asks you ~6 questions —
+1. **GitHub Project Owner** — your username or org
+2. **GitHub Project Number** — grab it from your project URL
+3. **Status mapping** — connect your Project's Status field to our lifecycle stages
+4. **Default repo** — fallback when there's no git remote
+5. **Idle timeout** — how long before we auto-close (default: 30 mins)
+6. **Scope** — this project only, or go global
+
+Then use Claude Code like normal. Everything flows to GitHub Projects automatically.
 
 ## Uninstall
 
