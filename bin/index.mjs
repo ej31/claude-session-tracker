@@ -60,6 +60,32 @@ function hasCmd(cmd) {
   return result.status === 0
 }
 
+function parseGitHubRepoFromRemoteUrl(remoteUrl) {
+  const trimmed = remoteUrl.trim().replace(/\.git$/, '')
+
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('ssh://')) {
+    try {
+      const parsed = new URL(trimmed)
+      const allowedHosts = parsed.protocol === 'ssh:'
+        ? new Set(['github.com', 'ssh.github.com'])
+        : new Set(['github.com'])
+      if (!allowedHosts.has(parsed.hostname)) return null
+      const pathParts = parsed.pathname.replace(/^\/+/, '').split('/')
+      if (pathParts.length < 2 || !pathParts[0] || !pathParts[1]) return null
+      return `${pathParts[0]}/${pathParts[1]}`
+    } catch {
+      return null
+    }
+  }
+
+  const scpLikeMatch = trimmed.match(/^(?:[^@]+@)?github\.com:(.+)$/)
+  if (!scpLikeMatch) return null
+
+  const pathParts = scpLikeMatch[1].split('/')
+  if (pathParts.length < 2 || !pathParts[0] || !pathParts[1]) return null
+  return `${pathParts[0]}/${pathParts[1]}`
+}
+
 function getGitHubRepoFromCwd(cwd = process.cwd()) {
   const result = spawnSync('git', ['-C', cwd, 'remote', 'get-url', 'origin'], {
     encoding: 'utf-8',
@@ -67,19 +93,7 @@ function getGitHubRepoFromCwd(cwd = process.cwd()) {
   })
   if (result.status !== 0) return null
 
-  const url = result.stdout.trim().replace(/\.git$/, '')
-  if (!url.includes('github.com')) return null
-
-  if (url.startsWith('https://')) {
-    const parts = url.split('/')
-    return `${parts.at(-2)}/${parts.at(-1)}`
-  }
-
-  if (url.includes(':')) {
-    return url.split(':').at(-1) ?? null
-  }
-
-  return null
+  return parseGitHubRepoFromRemoteUrl(result.stdout)
 }
 
 function getContextRepoExample(fallbackRepo) {
