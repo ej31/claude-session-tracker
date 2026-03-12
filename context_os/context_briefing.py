@@ -13,8 +13,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from build_context_os import (
-    ensure_scope_current,
     get_db_connection,
+    is_scope_fresh,
     load_scope_meta,
     setup_logger,
     scope_lock,
@@ -236,7 +236,9 @@ def main() -> int:
 
     try:
         with scope_lock(cwd):
-            graph_verified = ensure_scope_current(cwd, include_git_history=True)
+            # Compact-time briefing is on a user-visible path, so fail closed
+            # instead of triggering a synchronous rebuild when the scope is stale.
+            graph_verified = is_scope_fresh(cwd)
             scope_meta = load_scope_meta(cwd) or scope_meta
 
             try:

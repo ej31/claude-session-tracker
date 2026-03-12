@@ -86,7 +86,7 @@ class TestBriefingE2E:
         input_data = {"session_id": "test-session", "cwd": "/tmp/repo"}
         monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(input_data)))
         monkeypatch.setattr("context_briefing.scope_lock", lambda cwd: nullcontext())
-        monkeypatch.setattr("context_briefing.ensure_scope_current", lambda cwd, include_git_history=True: True)
+        monkeypatch.setattr("context_briefing.is_scope_fresh", lambda cwd: True)
         monkeypatch.setattr("context_briefing.get_db_connection", lambda **kwargs: (db, conn))
         monkeypatch.setattr(
             "context_briefing.load_scope_meta",
@@ -104,7 +104,7 @@ class TestBriefingE2E:
         input_data = {"session_id": "test-session", "cwd": "/tmp/repo"}
         monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(input_data)))
         monkeypatch.setattr("context_briefing.scope_lock", lambda cwd: nullcontext())
-        monkeypatch.setattr("context_briefing.ensure_scope_current", lambda cwd, include_git_history=True: False)
+        monkeypatch.setattr("context_briefing.is_scope_fresh", lambda cwd: False)
         monkeypatch.setattr(
             "context_briefing.load_scope_meta",
             lambda cwd=None: {"branch": "main", "worktree_root": "/tmp/repo"},
@@ -116,3 +116,23 @@ class TestBriefingE2E:
 
         captured = capsys.readouterr()
         assert "symbol/dependency 맥락 주입을 생략" in captured.out
+
+    def test_stale_scope_uses_existing_turns_and_files_only(self, seeded_db, monkeypatch, capsys):
+        db, conn = seeded_db
+        input_data = {"session_id": "test-session", "cwd": "/tmp/repo"}
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(input_data)))
+        monkeypatch.setattr("context_briefing.scope_lock", lambda cwd: nullcontext())
+        monkeypatch.setattr("context_briefing.is_scope_fresh", lambda cwd: False)
+        monkeypatch.setattr("context_briefing.get_db_connection", lambda **kwargs: (db, conn))
+        monkeypatch.setattr(
+            "context_briefing.load_scope_meta",
+            lambda cwd=None: {"branch": "main", "worktree_root": "/tmp/repo"},
+        )
+
+        result = main()
+        assert result == 0
+
+        captured = capsys.readouterr()
+        assert "## 최근 작업 파일" in captured.out
+        assert "utils.js" in captured.out
+        assert "## 안전하게 확인된 심볼" not in captured.out

@@ -93,6 +93,7 @@ When you chat with Claude Code, the tracker automatically
 - Optionally builds a local Context OS graph for the current worktree
 - Optionally restores recent files, symbols, and dependencies after Claude compacts
 - Fails closed when graph freshness can't be proven, instead of injecting stale symbol context
+- Compact-time briefing does not block on a rebuild; if the scope is stale it omits symbol/dependency context and waits for background refresh
 
 No setup after install. Just use Claude Code like normal.
 
@@ -110,6 +111,7 @@ Key properties:
 - Two worktrees of the same repo get different scope directories.
 - Freshness is checked against the current worktree root, branch, HEAD, and source fingerprint.
 - If freshness cannot be proven, Context OS omits symbol and dependency context instead of risking stale injection.
+- Compact-time briefing is fail-closed only: it never performs a synchronous rebuild on the compact hook.
 - File-level facts are preferred. Symbol-level facts (`ABOUT`, `MODIFIED_BY`) are only created when the current active graph resolves them safely.
 
 ## Context OS Performance Validation
