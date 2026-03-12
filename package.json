@@ -12,8 +12,10 @@
     "context_os/build_context_os.py",
     "context_os/context_briefing.py",
     "context_os/evaluate.py",
+    "context_os/history_*.py",
     "context_os/kuzu_ingest_edit.py",
     "context_os/kuzu_ingest_turn.py",
+    "context_os/perf_benchmark.py",
     "context_os/requirements.txt"
   ],
   "dependencies": {

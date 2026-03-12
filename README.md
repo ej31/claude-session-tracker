@@ -112,6 +112,16 @@ Key properties:
 - If freshness cannot be proven, Context OS omits symbol and dependency context instead of risking stale injection.
 - File-level facts are preferred. Symbol-level facts (`ABOUT`, `MODIFIED_BY`) are only created when the current active graph resolves them safely.
 
+## Context OS Performance Validation
+
+Run the local benchmark before shipping or enabling silent background mode:
+
+```bash
+python3 context_os/perf_benchmark.py --repo .
+```
+
+The report measures cold build cost, fresh compact latency, async hook cost, and local embedding overhead. Treat CPU time and memory as battery proxies; validate final energy impact on real devices before enabling always-on behavior by default.
+
 ---
 
 ## Why?
