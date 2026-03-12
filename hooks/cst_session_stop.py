@@ -10,6 +10,7 @@ import json
 import logging
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -18,8 +19,13 @@ from cst_github_utils import (
     _last_active_field_id,
     add_issue_comment,
     cancel_timer,
+    clear_runtime_status,
+    get_tracker_project_status_update,
+    is_tracker_board_off_track,
+    is_tracking_paused,
     load_env_file,
     load_state,
+    save_runtime_status,
     save_state,
     set_item_date_field,
     set_item_status,
@@ -51,6 +57,32 @@ def main() -> int:
     item_id = state.get("item_id")
     if not item_id:
         return 0
+
+    if is_tracking_paused(state):
+        logger.info(f"tracking paused → 응답 후처리 생략: {session_id[:8]}…")
+        cancel_timer(state)
+        state.pop("timer_pid", None)
+        save_state(session_id, state)
+        return 0
+
+    try:
+        if is_tracker_board_off_track():
+            status_update = get_tracker_project_status_update() or {}
+            save_runtime_status({
+                "status": "blocked",
+                "reason": "project_off_track",
+                "cwd": state.get("cwd", ""),
+                "checked_at": datetime.now().isoformat(),
+                "status_update_id": status_update.get("id"),
+            })
+            cancel_timer(state)
+            state.pop("timer_pid", None)
+            save_state(session_id, state)
+            logger.info(f"project board OFF_TRACK → 응답 후처리 생략: {session_id[:8]}…")
+            return 0
+        clear_runtime_status()
+    except Exception as e:
+        logger.error(f"project status 확인 실패: {e}")
 
     try:
         # 기존 타이머 취소

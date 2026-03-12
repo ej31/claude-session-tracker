@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import socket
 import sys
 from datetime import datetime
@@ -17,13 +18,18 @@ sys.path.insert(0, str(Path(__file__).parent))
 from cst_github_utils import (
     _created_field_id,
     _notes_repo,
+    clear_runtime_status,
     cancel_timer,
     create_repo_issue_and_add_to_project,
     find_active_state_by_cwd,
     get_git_repo,
+    get_tracker_project_status_update,
+    is_tracker_board_off_track,
+    is_repo_private,
     is_resume,
     load_env_file,
     load_state,
+    save_runtime_status,
     save_state,
     set_item_date_field,
     set_item_status,
@@ -60,6 +66,57 @@ def main() -> int:
     if not session_id:
         return 0
 
+    try:
+        notes_repo = _notes_repo()
+        if not is_repo_private(notes_repo):
+            save_runtime_status({
+                "status": "blocked",
+                "reason": "notes_repo_public",
+                "repo": notes_repo,
+                "cwd": cwd,
+                "checked_at": datetime.now().isoformat(),
+            })
+            logger.error(f"공개 저장소는 추적할 수 없음: {notes_repo}")
+            print(
+                f"Tracking is disabled because {notes_repo} is public. "
+                "Please configure a private NOTES_REPO before starting a tracked session."
+            )
+            return 0
+    except Exception as e:
+        save_runtime_status({
+            "status": "blocked",
+            "reason": "notes_repo_check_failed",
+            "repo": os.environ.get("NOTES_REPO", ""),
+            "cwd": cwd,
+            "checked_at": datetime.now().isoformat(),
+            "error": str(e),
+        })
+        logger.error(f"NOTES_REPO 검사 실패: {e}")
+        print(
+            "Tracking is disabled because the configured NOTES_REPO could not be verified. "
+            "Run `claude-session-tracker doctor` and fix the repository visibility check first."
+        )
+        return 0
+
+    try:
+        if is_tracker_board_off_track():
+            status_update = get_tracker_project_status_update() or {}
+            save_runtime_status({
+                "status": "blocked",
+                "reason": "project_off_track",
+                "cwd": cwd,
+                "checked_at": datetime.now().isoformat(),
+                "status_update_id": status_update.get("id"),
+            })
+            logger.info("project board가 OFF_TRACK 이므로 세션 등록 생략")
+            print(
+                "Tracking is disabled because the configured project board is currently OFF_TRACK. "
+                "Move it back to ON_TRACK before starting a tracked session."
+            )
+            return 0
+    except Exception as e:
+        logger.error(f"project status 확인 실패: {e}")
+
     # 이미 이 session_id로 상태 파일이 있으면 skip
     if load_state(session_id):
         logger.info(f"이미 등록된 세션: {session_id[:8]}…")
@@ -83,6 +140,7 @@ def main() -> int:
             old_issue = old_state.get("issue_number")
             if old_repo and old_issue:
                 issue_url = f"https://github.com/{old_repo}/issues/{old_issue}"
+                clear_runtime_status()
                 print(
                     f"This session is being tracked at {issue_url} (resumed) — "
                     f"Please inform the user that this conversation is being recorded at this URL. "
@@ -108,7 +166,6 @@ def main() -> int:
     issue_number = None
 
     try:
-        notes_repo = _notes_repo()
         # 이슈는 항상 notes_repo에 생성, git_repo는 제목 prefix에만 사용
         if git_repo:
             logger.info(f"GitHub repo 감지: {git_repo} → {notes_repo}에 Issue 생성")
@@ -129,7 +186,7 @@ def main() -> int:
             "status": "registered",
             "created_at": datetime.now().isoformat(),
         })
-        logger.info(f"item 생성 완료: {item_id} repo={repo}")
+        logger.info(f"item 생성 완료: {item_id} repo={notes_repo}")
 
         # Created 날짜 설정
         created_fid = _created_field_id()
@@ -142,7 +199,8 @@ def main() -> int:
                 logger.error(f"Created 필드 설정 실패: {e}")
 
         # 사용자에게 이슈 URL 안내 (stdout → Claude가 system-reminder로 수신)
-        issue_url = f"https://github.com/{repo}/issues/{issue_number}"
+        issue_url = f"https://github.com/{notes_repo}/issues/{issue_number}"
+        clear_runtime_status()
         print(
             f"This session is being tracked at {issue_url} — "
             f"Please inform the user that this conversation is being recorded at this URL. "

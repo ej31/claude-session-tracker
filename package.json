@@ -6,6 +6,9 @@
   "bin": {
     "claude-session-tracker": "./bin/index.mjs"
   },
+  "scripts": {
+    "test": "node test/compat.mjs && node test/cli.mjs && python3 -m py_compile hooks/cst_github_utils.py hooks/cst_session_start.py hooks/cst_prompt_to_github_projects.py hooks/cst_session_stop.py hooks/cst_post_tool_use.py hooks/cst_mark_done.py"
+  },
   "files": [
     "bin/",
     "hooks/cst_*.py"

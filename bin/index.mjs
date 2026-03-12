@@ -3,11 +3,20 @@ import * as p from '@clack/prompts'
 import { spawnSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import {
-  mkdirSync, writeFileSync, readFileSync,
-  existsSync, copyFileSync, chmodSync, unlinkSync, rmSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  copyFileSync,
+  chmodSync,
+  unlinkSync,
+  rmSync,
+  readdirSync,
+  realpathSync,
+  statSync,
 } from 'node:fs'
-import { join, dirname } from 'node:path'
-import { homedir } from 'node:os'
+import { join, dirname, basename } from 'node:path'
+import { homedir, networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -15,7 +24,18 @@ const HOME = homedir()
 const HOOKS_DIR = join(HOME, '.claude', 'hooks')
 const STATE_DIR = join(HOOKS_DIR, 'state')
 const CONFIG_FILE = join(HOOKS_DIR, 'config.env')
+const AUTO_SETUP_RECOVERY_FILE = join(HOOKS_DIR, 'auto_setup_recovery.json')
+const PROJECT_STATUS_CACHE_FILE = join(HOOKS_DIR, 'project_status_update.json')
+const RUNTIME_STATUS_FILE = join(HOOKS_DIR, 'runtime_status.json')
 const HOOKS_SRC = join(__dirname, '..', 'hooks')
+const PROJECT_STATUS_MARKER = '<!-- claude-session-tracker:project-status -->'
+const AUTO_SETUP_STEPS = [
+  'repo_created',
+  'project_created',
+  'status_configured',
+  'date_fields_attempted',
+  'hooks_installed',
+]
 const PY_FILES = [
   'cst_github_utils.py',
   'cst_session_start.py',
@@ -34,16 +54,40 @@ const LEGACY_PY_FILES = [
 ]
 const ALL_KNOWN_FILES = [...PY_FILES, ...LEGACY_PY_FILES]
 const OUR_HOOK_KEYS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionEnd']
-
 const STATUS_LABELS = {
   en: { registered: 'Registered', responding: 'Responding', waiting: 'Waiting', closed: 'Closed' },
   ko: { registered: '세션 등록', responding: '답변 중', waiting: '입력 대기', closed: '세션 종료' },
   ja: { registered: 'セッション登録', responding: '応答中', waiting: '入力待ち', closed: 'セッション終了' },
   zh: { registered: '会话注册', responding: '响应中', waiting: '等待输入', closed: '会话关闭' },
 }
-
 const STATUS_COLORS = ['BLUE', 'GREEN', 'YELLOW', 'GRAY']
 const STATUS_DESCRIPTIONS = ['Session started', 'Claude is responding', 'Waiting for user input', 'Session ended']
+const STATUS_RECOMMENDATION_SYNONYMS = {
+  registered: ['registered', 'new', 'open', 'todo', 'to do', 'queued', 'backlog', 'planned', 'ready'],
+  responding: ['responding', 'in progress', 'in-progress', 'working', 'active', 'ongoing', 'doing'],
+  waiting: ['waiting', 'pending', 'needs input', 'blocked', 'review', 'on hold', 'hold'],
+  closed: ['closed', 'done', 'complete', 'completed', 'resolved', 'finished'],
+}
+const STATUS_ACTIONS = {
+  install: {
+    trackerState: 'installed',
+    boardStatus: 'ON_TRACK',
+    message:
+      'Tracking is installed and active. Local hook-driven prompt/response capture is ready for the next Claude session.',
+  },
+  pause: {
+    trackerState: 'paused',
+    boardStatus: 'OFF_TRACK',
+    message:
+      'Local tracking is paused. Prompt/response comments, issue title updates, project item status transitions, and idle auto-close are suspended until resume.',
+  },
+  resume: {
+    trackerState: 'resumed',
+    boardStatus: 'ON_TRACK',
+    message:
+      'Local tracking is active again. Normal prompt/response capture and project item status transitions will continue from the next hook event.',
+  },
+}
 
 // -- Utilities ----------------------------------------------------------------
 
@@ -55,9 +99,349 @@ function onCancel() {
 function hasCmd(cmd) {
   const isWin = process.platform === 'win32'
   const finder = isWin ? 'where' : 'which'
-  // Windows에서 choco, scoop 등 .cmd 파일도 찾으려면 shell: true 필요
   const result = spawnSync(finder, [cmd], { stdio: 'ignore', shell: isWin })
   return result.status === 0
+}
+
+function readJson(path, fallback = {}) {
+  if (!existsSync(path)) return fallback
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8'))
+  } catch {
+    return fallback
+  }
+}
+
+function readJsonStrict(path) {
+  return JSON.parse(readFileSync(path, 'utf-8'))
+}
+
+function writeJson(path, data) {
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, JSON.stringify(data, null, 2) + '\n')
+}
+
+function removeFileIfExists(path) {
+  if (!existsSync(path)) return
+  unlinkSync(path)
+}
+
+function readEnvFile(path) {
+  if (!existsSync(path)) return null
+  const env = {}
+  for (const rawLine of readFileSync(path, 'utf-8').split('\n')) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#') || !line.includes('=')) continue
+    const [rawKey, ...rawValue] = line.split('=')
+    const key = rawKey.trim()
+    let value = rawValue.join('=').trim()
+    if (!(value.startsWith('"') || value.startsWith("'"))) {
+      value = value.split('#')[0].trim()
+    }
+    env[key] = value.replace(/^['"]|['"]$/g, '')
+  }
+  return env
+}
+
+function formatYesNo(value) {
+  return value ? 'yes' : 'no'
+}
+
+function getStatePath(sessionId) {
+  return join(STATE_DIR, `${sessionId}.json`)
+}
+
+function saveState(sessionId, state) {
+  writeJson(getStatePath(sessionId), state)
+}
+
+function loadRuntimeStatus() {
+  return readJson(RUNTIME_STATUS_FILE, null)
+}
+
+function clearRuntimeStatus() {
+  removeFileIfExists(RUNTIME_STATUS_FILE)
+}
+
+function loadProjectStatusCache() {
+  return readJson(PROJECT_STATUS_CACHE_FILE, null)
+}
+
+function saveProjectStatusCache(cache) {
+  writeJson(PROJECT_STATUS_CACHE_FILE, cache)
+}
+
+function loadAutoSetupRecovery() {
+  return readJson(AUTO_SETUP_RECOVERY_FILE, null)
+}
+
+function saveAutoSetupRecovery(recovery) {
+  writeJson(AUTO_SETUP_RECOVERY_FILE, recovery)
+}
+
+function clearAutoSetupRecovery() {
+  removeFileIfExists(AUTO_SETUP_RECOVERY_FILE)
+}
+
+function hasRecoveryStep(recovery, step) {
+  return Boolean(recovery?.completedSteps?.includes(step))
+}
+
+function markAutoSetupStep(recovery, step, patch = {}) {
+  const completedSteps = Array.from(new Set([...(recovery.completedSteps ?? []), step]))
+  const next = { ...recovery, ...patch, completedSteps, updatedAt: new Date().toISOString() }
+  saveAutoSetupRecovery(next)
+  return next
+}
+
+function issueUrlFromState(state) {
+  if (!state?.repo || !state?.issue_number) return null
+  return `https://github.com/${state.repo}/issues/${state.issue_number}`
+}
+
+function getLocalIp() {
+  const interfaces = networkInterfaces()
+  for (const addresses of Object.values(interfaces)) {
+    for (const address of addresses ?? []) {
+      if (address && address.family === 'IPv4' && !address.internal) {
+        return address.address
+      }
+    }
+  }
+  return 'unknown'
+}
+
+function normalizeCwd(path) {
+  try {
+    return realpathSync.native(path)
+  } catch {
+    return path
+  }
+}
+
+function cancelTimerPid(pid) {
+  if (!pid) return
+  try {
+    process.kill(pid, 'SIGTERM')
+  } catch {
+    // noop
+  }
+}
+
+function listSessionStates() {
+  if (!existsSync(STATE_DIR)) return []
+  return readdirSync(STATE_DIR)
+    .filter(name => name.endsWith('.json'))
+    .map((name) => {
+      const path = join(STATE_DIR, name)
+      try {
+        const state = readJsonStrict(path)
+        return {
+          ok: true,
+          path,
+          sessionId: name.replace(/\.json$/, ''),
+          state,
+          mtimeMs: statSync(path).mtimeMs,
+        }
+      } catch (error) {
+        return {
+          ok: false,
+          path,
+          sessionId: name.replace(/\.json$/, ''),
+          error,
+          mtimeMs: statSync(path).mtimeMs,
+        }
+      }
+    })
+}
+
+function findSessionByCwd(cwd, { pausedOnly = false, activeOnly = true } = {}) {
+  const normalizedCwd = normalizeCwd(cwd)
+  const candidates = listSessionStates()
+    .filter(entry => entry.ok)
+    .filter((entry) => {
+      const state = entry.state
+      if (normalizeCwd(state.cwd) !== normalizedCwd) return false
+      if (activeOnly && state.status === 'closed') return false
+      if (pausedOnly && !state.tracking_paused) return false
+      return true
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+  return candidates[0] ?? null
+}
+
+function getSettingsPaths(cwd = process.cwd()) {
+  return [
+    { scope: 'global', path: join(HOME, '.claude', 'settings.json') },
+    { scope: 'project', path: join(cwd, '.claude', 'settings.json') },
+  ]
+}
+
+function hasTrackerHooks(settings) {
+  if (!settings?.hooks) return false
+  return OUR_HOOK_KEYS.some((key) => {
+    const entries = settings.hooks[key]
+    return Array.isArray(entries) && entries.some(entry => {
+      const hooks = entry.hooks ?? []
+      return hooks.some(hook => ALL_KNOWN_FILES.some(file => hook.command?.includes(file)))
+    })
+  })
+}
+
+function collectHookRegistrations(cwd = process.cwd()) {
+  return getSettingsPaths(cwd).map(({ scope, path }) => {
+    if (!existsSync(path)) return { scope, path, exists: false, installed: false }
+    try {
+      const settings = readJsonStrict(path)
+      return {
+        scope,
+        path,
+        exists: true,
+        installed: hasTrackerHooks(settings),
+        invalid: false,
+      }
+    } catch (error) {
+      return {
+        scope,
+        path,
+        exists: true,
+        installed: false,
+        invalid: true,
+        error,
+      }
+    }
+  })
+}
+
+function getInstallState(cwd = process.cwd()) {
+  const config = readEnvFile(CONFIG_FILE)
+  const hookFilesPresent = PY_FILES.every(file => existsSync(join(HOOKS_DIR, file)))
+  const hookRegistrations = collectHookRegistrations(cwd)
+  const installedTargets = hookRegistrations.filter(target => target.installed)
+  const anyInstalledSignal = Boolean(config) || hookFilesPresent || hookRegistrations.some(target => target.exists)
+
+  if (config && hookFilesPresent && installedTargets.length > 0) {
+    return {
+      state: 'installed',
+      config,
+      hookFilesPresent,
+      hookRegistrations,
+    }
+  }
+
+  return {
+    state: anyInstalledSignal ? 'partial' : 'not-installed',
+    config,
+    hookFilesPresent,
+    hookRegistrations,
+  }
+}
+
+function normalizeStatusName(value) {
+  return value.toLowerCase().replace(/[^a-z0-9\u3131-\u318e\uac00-\ud7a3\u3040-\u30ff\u4e00-\u9fff]+/g, ' ').trim()
+}
+
+function buildStatusCandidates(lang) {
+  const candidates = {}
+  for (const [key, synonyms] of Object.entries(STATUS_RECOMMENDATION_SYNONYMS)) {
+    candidates[key] = new Set(synonyms.map(normalizeStatusName))
+    for (const localized of Object.values(STATUS_LABELS)) {
+      candidates[key].add(normalizeStatusName(localized[key]))
+    }
+    if (STATUS_LABELS[lang]?.[key]) {
+      candidates[key].add(normalizeStatusName(STATUS_LABELS[lang][key]))
+    }
+  }
+  return candidates
+}
+
+function scoreStatusOption(optionName, candidateNames) {
+  const normalizedOption = normalizeStatusName(optionName)
+  let bestScore = 0
+  for (const candidate of candidateNames) {
+    if (!candidate) continue
+    if (normalizedOption === candidate) return 300
+    if (normalizedOption.includes(candidate)) bestScore = Math.max(bestScore, 200 - (normalizedOption.length - candidate.length))
+    if (candidate.includes(normalizedOption)) bestScore = Math.max(bestScore, 120 - (candidate.length - normalizedOption.length))
+  }
+  return bestScore
+}
+
+function recommendStatusMapping(options, lang) {
+  const candidates = buildStatusCandidates(lang)
+  const map = {}
+  const unresolved = []
+  const usedIds = new Set()
+
+  for (const key of ['registered', 'responding', 'waiting', 'closed']) {
+    const ranked = options
+      .map(option => ({
+        option,
+        score: scoreStatusOption(option.name, candidates[key]),
+      }))
+      .filter(entry => entry.score > 0)
+      .sort((left, right) => right.score - left.score)
+
+    const winner = ranked.find(entry => !usedIds.has(entry.option.id))
+    if (!winner) {
+      unresolved.push(key)
+      continue
+    }
+
+    const nextDistinctScore = ranked.find(entry => entry.option.id !== winner.option.id && !usedIds.has(entry.option.id))?.score ?? 0
+    if (winner.score <= nextDistinctScore) {
+      unresolved.push(key)
+      continue
+    }
+
+    map[key] = winner.option.id
+    usedIds.add(winner.option.id)
+  }
+
+  return { map, unresolved }
+}
+
+function ghGraphql(query, variables = {}) {
+  const result = spawnSync(
+    'gh',
+    ['api', 'graphql', '--input', '-'],
+    { input: JSON.stringify({ query, variables }), encoding: 'utf-8' },
+  )
+  if (!result.stdout?.trim()) {
+    throw new Error(result.stderr || 'No response from gh api')
+  }
+  return JSON.parse(result.stdout)
+}
+
+function ghCommand(args) {
+  const result = spawnSync('gh', args, { encoding: 'utf-8' })
+  if (result.status !== 0) {
+    throw new Error(result.stderr?.trim() || `gh command failed: gh ${args.join(' ')}`)
+  }
+  return result.stdout?.trim() ?? ''
+}
+
+function ghRepoIsPrivate(repo) {
+  const value = ghCommand(['api', `repos/${repo}`, '--jq', '.private']).toLowerCase()
+  if (value === 'true') return true
+  if (value === 'false') return false
+  throw new Error(`Unexpected repo visibility response for ${repo}: ${value}`)
+}
+
+function hasRequiredScopes() {
+  const result = spawnSync('gh', ['auth', 'status'], { encoding: 'utf-8' })
+  const output = result.stdout + result.stderr
+  return output.includes('project') && output.includes('repo')
+}
+
+function openBrowser(url) {
+  if (process.platform === 'darwin') {
+    spawnSync('open', [url])
+  } else if (process.platform === 'win32') {
+    spawnSync('cmd', ['/c', 'start', url], { shell: true })
+  } else {
+    spawnSync('xdg-open', [url])
+  }
 }
 
 // -- gh 자동 설치 -------------------------------------------------------------
@@ -67,8 +451,11 @@ function detectLinuxDistro() {
     const content = readFileSync('/etc/os-release', 'utf-8')
     const lines = Object.fromEntries(
       content.split('\n')
-        .filter(l => l.includes('='))
-        .map(l => { const [k, ...v] = l.split('='); return [k.trim(), v.join('=').replace(/"/g, '').trim()] }),
+        .filter(line => line.includes('='))
+        .map((line) => {
+          const [key, ...value] = line.split('=')
+          return [key.trim(), value.join('=').replace(/"/g, '').trim()]
+        }),
     )
     const combined = `${lines.ID ?? ''} ${lines.ID_LIKE ?? ''}`.toLowerCase()
     if (combined.includes('debian') || combined.includes('ubuntu')) return 'debian'
@@ -82,7 +469,6 @@ function detectLinuxDistro() {
 }
 
 function runCmd(cmd, args) {
-  // Windows에서 winget, choco, scoop 등 .cmd/.bat 파일 실행을 위해 shell: true 필요
   const result = spawnSync(cmd, args, { stdio: 'inherit', shell: process.platform === 'win32' })
   return result.status === 0
 }
@@ -104,8 +490,7 @@ async function tryInstallGh() {
     const distro = detectLinuxDistro()
     if (distro === 'debian') {
       p.log.info('Running: sudo apt update && sudo apt install gh -y')
-      const updated = runCmd('sudo', ['apt', 'update'])
-      if (!updated) return false
+      if (!runCmd('sudo', ['apt', 'update'])) return false
       return runCmd('sudo', ['apt', 'install', 'gh', '-y'])
     }
     if (distro === 'fedora') {
@@ -148,26 +533,162 @@ async function tryInstallGh() {
   return false
 }
 
-function ghGraphql(query, variables = {}) {
-  const result = spawnSync(
-    'gh', ['api', 'graphql', '--input', '-'],
-    { input: JSON.stringify({ query, variables }), encoding: 'utf-8' },
-  )
-  if (!result.stdout?.trim()) throw new Error(result.stderr || 'No response from gh api')
-  return JSON.parse(result.stdout)
-}
+async function fallbackAuthGuide(mode = 'login') {
+  const cmd = mode === 'login'
+    ? 'gh auth login --web --scopes project,repo'
+    : 'gh auth refresh --scopes project,repo'
 
-function ghCommand(args) {
-  const result = spawnSync('gh', args, { encoding: 'utf-8' })
-  if (result.status !== 0) {
-    throw new Error(result.stderr?.trim() || `gh command failed: gh ${args.join(' ')}`)
+  p.log.step('Run the command below in your terminal, then press Enter when done.\n')
+  p.log.message(`  ${cmd}\n`)
+
+  await p.text({
+    message: 'Press Enter when done.',
+    placeholder: '',
+  })
+
+  const recheck = spawnSync('gh', ['auth', 'status'], { encoding: 'utf-8' })
+  if (recheck.status !== 0) {
+    p.log.error('Authentication was not completed.')
+    p.outro('Setup aborted.')
+    process.exit(1)
   }
-  return result.stdout?.trim() ?? ''
 }
 
-function readJson(path) {
-  if (!existsSync(path)) return {}
-  try { return JSON.parse(readFileSync(path, 'utf-8')) } catch { return {} }
+async function runGhAuthWithStream(args, mode = 'login') {
+  return new Promise((resolve, reject) => {
+    const ghBrowser = process.platform === 'win32' ? 'cmd /c exit 0' : '/usr/bin/true'
+    const child = spawn('gh', args, {
+      env: { ...process.env, GH_BROWSER: ghBrowser },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+
+    let codeShown = false
+    let resolved = false
+    const timeout = setTimeout(async () => {
+      if (!codeShown && !resolved) {
+        child.kill()
+        try {
+          await fallbackAuthGuide(mode)
+          resolved = true
+          resolve()
+        } catch (error) {
+          reject(error)
+        }
+      }
+    }, 15000)
+
+    const handleOutput = (data) => {
+      const text = data.toString()
+      if (codeShown) return
+      const match = text.match(/([A-Z0-9]{4}-[A-Z0-9]{4})/)
+      if (!match) return
+
+      codeShown = true
+      const code = match[1]
+      p.note(
+        'Why this is required:\n' +
+        '  claude-session-tracker needs to create and manage GitHub Projects on your behalf.\n' +
+        '  This requires read/write access via OAuth — your credentials are never seen\n' +
+        '  or stored by claude-session-tracker. Login is handled entirely by GitHub.',
+        'Why is GitHub login required?',
+      )
+      p.log.step('A browser has been opened.')
+      p.log.info('  - Enter the code below in your browser.')
+      p.log.info('  - claude-session-tracker does not collect any information during this process.')
+      p.log.message('')
+      p.log.message(`  Your GitHub authentication code:  ${code}`)
+
+      openBrowser('https://github.com/login/device')
+      child.stdin.write('\n')
+    }
+
+    child.stdout.on('data', handleOutput)
+    child.stderr.on('data', handleOutput)
+
+    child.on('close', (code) => {
+      clearTimeout(timeout)
+      if (resolved) return
+      resolved = true
+      if (code === 0) resolve()
+      else reject(new Error(`gh auth failed (exit code: ${code})`))
+    })
+
+    child.on('error', (error) => {
+      clearTimeout(timeout)
+      if (!resolved) {
+        resolved = true
+        reject(error)
+      }
+    })
+  })
+}
+
+async function runGhAuthLogin() {
+  return runGhAuthWithStream(['auth', 'login', '--web', '--scopes', 'project,repo'], 'login')
+}
+
+async function runGhAuthRefresh() {
+  return runGhAuthWithStream(['auth', 'refresh', '--scopes', 'project,repo'], 'refresh')
+}
+
+function getAuthenticatedUser() {
+  const result = spawnSync('gh', ['api', 'user', '--jq', '.login'], { encoding: 'utf-8' })
+  if (result.status !== 0 || !result.stdout?.trim()) return null
+  return result.stdout.trim()
+}
+
+function fetchProjectMetadata(owner, number) {
+  const query = `
+    query($login: String!, $number: Int!) {
+      user(login: $login) {
+        projectV2(number: $number) {
+          id
+          title
+          url
+          fields(first: 30) {
+            nodes {
+              ... on ProjectV2SingleSelectField {
+                id
+                name
+                options { id name }
+              }
+            }
+          }
+        }
+      }
+      organization(login: $login) {
+        projectV2(number: $number) {
+          id
+          title
+          url
+          fields(first: 30) {
+            nodes {
+              ... on ProjectV2SingleSelectField {
+                id
+                name
+                options { id name }
+              }
+            }
+          }
+        }
+      }
+    }`
+  const response = ghGraphql(query, { login: owner, number })
+  const project = response.data?.user?.projectV2 ?? response.data?.organization?.projectV2
+  if (!project) throw new Error('Could not find the project. Please check the owner and project number.')
+  const statusField = project.fields.nodes.find(field => field?.name === 'Status')
+  if (!statusField) throw new Error("Could not find a 'Status' field in this project.")
+  return { projectId: project.id, projectTitle: project.title, projectUrl: project.url, statusField }
+}
+
+function deleteProjectV2(projectId) {
+  const mutation = `
+    mutation($projectId: ID!) {
+      deleteProjectV2(input: { projectId: $projectId }) {
+        projectV2 { id }
+      }
+    }`
+  ghGraphql(mutation, { projectId })
 }
 
 function mergeHooks(existing, hooksDir) {
@@ -202,9 +723,9 @@ function removeOurHooks(settings) {
   for (const key of OUR_HOOK_KEYS) {
     const entries = cleaned.hooks[key]
     if (!Array.isArray(entries)) continue
-    cleaned.hooks[key] = entries.filter(entry => {
-      const cmds = entry.hooks ?? []
-      return !cmds.some(h => ALL_KNOWN_FILES.some(f => h.command?.includes(f)))
+    cleaned.hooks[key] = entries.filter((entry) => {
+      const hooks = entry.hooks ?? []
+      return !hooks.some(hook => ALL_KNOWN_FILES.some(file => hook.command?.includes(file)))
     })
     if (cleaned.hooks[key].length === 0) delete cleaned.hooks[key]
   }
@@ -212,170 +733,25 @@ function removeOurHooks(settings) {
   return cleaned
 }
 
-function getAuthenticatedUser() {
-  const result = spawnSync('gh', ['api', 'user', '--jq', '.login'], { encoding: 'utf-8' })
-  if (result.status !== 0 || !result.stdout?.trim()) return null
-  return result.stdout.trim()
-}
-
-function hasRequiredScopes() {
-  const result = spawnSync('gh', ['auth', 'status'], { encoding: 'utf-8' })
-  const output = result.stdout + result.stderr
-  return output.includes('project') && output.includes('repo')
-}
-
-function openBrowser(url) {
-  const platform = process.platform
-  if (platform === 'darwin') {
-    spawnSync('open', [url])
-  } else if (platform === 'win32') {
-    spawnSync('cmd', ['/c', 'start', url], { shell: true })
-  } else {
-    spawnSync('xdg-open', [url])
-  }
-}
-
-async function fallbackAuthGuide(mode = 'login') {
-  const cmd = mode === 'login'
-    ? 'gh auth login --web --scopes project,repo'
-    : 'gh auth refresh --scopes project,repo'
-
-  p.log.step('Run the command below in your terminal, then press Enter when done.\n')
-  p.log.message(`  ${cmd}\n`)
-
-  await p.text({
-    message: 'Press Enter when done.',
-    placeholder: '',
-  })
-
-  const recheck = spawnSync('gh', ['auth', 'status'], { encoding: 'utf-8' })
-  if (recheck.status !== 0) {
-    p.log.error('Authentication was not completed.')
-    p.outro('Setup aborted.')
-    process.exit(1)
-  }
-}
-
-async function runGhAuthWithStream(args, mode = 'login') {
-  return new Promise((resolve, reject) => {
-    // Windows에서는 GH_BROWSER 값을 다르게 설정
-    const ghBrowser = process.platform === 'win32' ? 'cmd /c exit 0' : '/usr/bin/true'
-
-    const child = spawn('gh', args, {
-      env: { ...process.env, GH_BROWSER: ghBrowser },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-
-    let codeShown = false
-    let resolved = false
-
-    // 15초 내 코드 미감지 시 폴백
-    const timeout = setTimeout(async () => {
-      if (!codeShown && !resolved) {
-        child.kill()
-        try {
-          await fallbackAuthGuide(mode)
-          resolved = true
-          resolve()
-        } catch (err) {
-          reject(err)
-        }
-      }
-    }, 15000)
-
-    const handleOutput = (data) => {
-      const text = data.toString()
-
-      if (!codeShown) {
-        const match = text.match(/([A-Z0-9]{4}-[A-Z0-9]{4})/)
-        if (match) {
-          codeShown = true
-          const code = match[1]
-          p.note(
-            'Why this is required:\n' +
-            '  claude-session-tracker needs to create and manage GitHub Projects on your behalf.\n' +
-            '  This requires read/write access via OAuth — your credentials are never seen\n' +
-            '  or stored by claude-session-tracker. Login is handled entirely by GitHub.',
-            'Why is GitHub login required?'
-          )
-          p.log.step('A browser has been opened.')
-          p.log.info('  - Enter the code below in your browser.')
-          p.log.info('  - claude-session-tracker does not collect any information during this process.')
-          p.log.message('')
-          p.log.message(`  Your GitHub authentication code:  ${code}`)
-
-          openBrowser('https://github.com/login/device')
-
-          // gh가 "Press Enter" 대기 중이면 Enter 전송
-          child.stdin.write('\n')
-        }
-      }
-    }
-
-    child.stdout.on('data', handleOutput)
-    child.stderr.on('data', handleOutput)
-
-    child.on('close', (code) => {
-      clearTimeout(timeout)
-      if (resolved) return
-      resolved = true
-      if (code === 0) resolve()
-      else reject(new Error(`gh auth failed (exit code: ${code})`))
-    })
-
-    child.on('error', (err) => {
-      clearTimeout(timeout)
-      if (!resolved) {
-        resolved = true
-        reject(err)
-      }
-    })
-  })
-}
-
-async function runGhAuthLogin() {
-  return runGhAuthWithStream(['auth', 'login', '--web', '--scopes', 'project,repo'], 'login')
-}
-
-async function runGhAuthRefresh() {
-  return runGhAuthWithStream(['auth', 'refresh', '--scopes', 'project,repo'], 'refresh')
-}
-
-function fetchProjectMetadata(owner, number) {
-  const query = `
-    query($login: String!, $number: Int!) {
-      user(login: $login) {
-        projectV2(number: $number) {
-          id title url
-          fields(first: 30) {
-            nodes { ... on ProjectV2SingleSelectField { id name options { id name } } }
-          }
-        }
-      }
-      organization(login: $login) {
-        projectV2(number: $number) {
-          id title url
-          fields(first: 30) {
-            nodes { ... on ProjectV2SingleSelectField { id name options { id name } } }
-          }
-        }
-      }
-    }`
-  const res = ghGraphql(query, { login: owner, number })
-  const pv2 = res.data?.user?.projectV2 ?? res.data?.organization?.projectV2
-  if (!pv2) throw new Error('Could not find the project. Please check the owner and project number.')
-  const statusField = pv2.fields.nodes.find(n => n?.name === 'Status')
-  if (!statusField) throw new Error("Could not find a 'Status' field in this project.")
-  return { projectId: pv2.id, projectTitle: pv2.title, projectUrl: pv2.url, statusField }
-}
-
-function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId, statusMap, notesRepo, timeoutMinutes, scope, createdFieldId, lastActiveFieldId, lang }) {
+function installHooksAndConfig({
+  owner,
+  projectNumber,
+  projectId,
+  statusFieldId,
+  statusMap,
+  notesRepo,
+  timeoutMinutes,
+  scope,
+  createdFieldId,
+  lastActiveFieldId,
+  lang,
+}) {
   mkdirSync(HOOKS_DIR, { recursive: true })
   mkdirSync(STATE_DIR, { recursive: true })
 
-  for (const f of PY_FILES) {
-    copyFileSync(join(HOOKS_SRC, f), join(HOOKS_DIR, f))
-    chmodSync(join(HOOKS_DIR, f), 0o755)
+  for (const file of PY_FILES) {
+    copyFileSync(join(HOOKS_SRC, file), join(HOOKS_DIR, file))
+    chmodSync(join(HOOKS_DIR, file), 0o755)
   }
 
   const configLines = [
@@ -408,11 +784,455 @@ function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId,
   )
 }
 
+function buildProjectReadme() {
+  return [
+    '# Claude Session Tracker',
+    '',
+    'This project is managed by `claude-session-tracker`.',
+    '',
+    '## Managed status flag',
+    '',
+    '- `ON_TRACK` means local tracking is enabled.',
+    '- `OFF_TRACK` means local tracking is paused.',
+    '',
+    '> Warning: do not manually change the tracker `ON_TRACK` / `OFF_TRACK` status values. Use `claude-session-tracker pause` and `claude-session-tracker resume` instead.',
+    '',
+    '## History',
+    '',
+    'Each local install / pause / resume action writes a project status update that includes session metadata such as workspace, timestamp, issue URL, and local IP.',
+  ].join('\n')
+}
+
+function updateProjectReadme(projectId, readme) {
+  const mutation = `
+    mutation($projectId: ID!, $readme: String!) {
+      updateProjectV2(input: {
+        projectId: $projectId
+        readme: $readme
+      }) {
+        projectV2 {
+          id
+          readme
+        }
+      }
+    }`
+  const response = ghGraphql(mutation, { projectId, readme })
+  return response.data?.updateProjectV2?.projectV2
+}
+
+function ensureProjectReadmeAfterInstall(projectId) {
+  const spin = p.spinner()
+  spin.start('Configuring project README...')
+  try {
+    updateProjectReadme(projectId, buildProjectReadme())
+    spin.stop('Project README configured')
+    return true
+  } catch (error) {
+    spin.stop('Could not configure project README')
+    p.log.warn(`The install completed, but setting the project README failed: ${error.message}`)
+    return false
+  }
+}
+
+function ensureProjectOnTrackAfterInstall(projectId, cwd = process.cwd()) {
+  const spin = p.spinner()
+  spin.start('Marking project board ON_TRACK...')
+  const result = syncProjectStatusCard({ GITHUB_PROJECT_ID: projectId }, 'install', { cwd })
+  if (result.ok) {
+    spin.stop('Project board marked ON_TRACK')
+    return true
+  }
+
+  spin.stop('Could not mark project board ON_TRACK')
+  p.log.warn(`The install completed, but syncing ON_TRACK failed: ${result.error}`)
+  p.log.info('You can retry later with: claude-session-tracker resume')
+  return false
+}
+
+function buildProjectStatusBody(action, state) {
+  const config = STATUS_ACTIONS[action]
+  const issueUrl = issueUrlFromState(state) ?? '_Unavailable_'
+  const workspace = state?.cwd || process.cwd()
+  const sessionId = state?.session_id ?? '_Unavailable_'
+  return [
+    PROJECT_STATUS_MARKER,
+    `**Tracker state:** ${config.trackerState}`,
+    `**Session ID:** ${sessionId}`,
+    `**Issue:** ${issueUrl}`,
+    `**Workspace:** ${workspace}`,
+    `**Updated at:** ${new Date().toISOString()}`,
+    `**Local IP:** ${getLocalIp()}`,
+    '',
+    config.message,
+  ].join('\n')
+}
+
+function createProjectStatusUpdate(projectId, status, body) {
+  const mutation = `
+    mutation($projectId: ID!, $status: ProjectV2StatusUpdateStatus!, $body: String!) {
+      createProjectV2StatusUpdate(input: {
+        projectId: $projectId
+        status: $status
+        body: $body
+      }) {
+        statusUpdate {
+          id
+          status
+          updatedAt
+          body
+        }
+      }
+    }`
+  const response = ghGraphql(mutation, { projectId, status, body })
+  return response.data?.createProjectV2StatusUpdate?.statusUpdate
+}
+
+function syncProjectStatusCard(config, action, state) {
+  const desired = STATUS_ACTIONS[action]
+  const cache = loadProjectStatusCache()
+  const body = buildProjectStatusBody(action, state)
+  const projectId = config.GITHUB_PROJECT_ID
+
+  try {
+    const statusUpdate = createProjectStatusUpdate(projectId, desired.boardStatus, body)
+
+    if (!statusUpdate?.id) {
+      throw new Error('Failed to create the project status update card.')
+    }
+
+    const nextCache = {
+      project_id: projectId,
+      status_update_id: statusUpdate.id,
+      last_status: desired.boardStatus,
+      last_synced_at: new Date().toISOString(),
+      last_issue_url: issueUrlFromState(state),
+      last_cwd_basename: basename(state?.cwd || process.cwd()),
+    }
+    saveProjectStatusCache(nextCache)
+    return { ok: true, cache: nextCache }
+  } catch (error) {
+    const failedCache = {
+      project_id: projectId,
+      status_update_id: cache?.project_id === projectId ? cache.status_update_id ?? null : null,
+      last_status: desired.boardStatus,
+      last_synced_at: cache?.last_synced_at ?? null,
+      last_issue_url: issueUrlFromState(state),
+      last_cwd_basename: basename(state?.cwd || process.cwd()),
+      last_error: error.message,
+      last_attempted_at: new Date().toISOString(),
+    }
+    saveProjectStatusCache(failedCache)
+    return { ok: false, error: error.message, cache: failedCache }
+  }
+}
+
+function describeBoardSync(sync) {
+  if (!sync) return 'never synced'
+  if (sync.success) return `${sync.status} at ${sync.synced_at}`
+  if (sync.error) return `failed (${sync.error})`
+  return 'unknown'
+}
+
+function printStatus() {
+  const install = getInstallState(process.cwd())
+  const config = install.config
+  const activeSession = findSessionByCwd(process.cwd())
+  const projectStatusCache = loadProjectStatusCache()
+  const runtimeStatus = loadRuntimeStatus()
+
+  console.log('Claude Session Tracker Status')
+  console.log(`Install: ${install.state}`)
+  console.log(`Hook files present: ${formatYesNo(install.hookFilesPresent)}`)
+
+  for (const target of install.hookRegistrations) {
+    const detail = target.invalid
+      ? 'invalid settings.json'
+      : target.installed
+        ? 'installed'
+        : target.exists
+          ? 'present but tracker hooks missing'
+          : 'not present'
+    console.log(`Hook scope (${target.scope}): ${detail} [${target.path}]`)
+  }
+
+  if (config) {
+    const scopes = install.hookRegistrations.filter(target => target.installed).map(target => target.scope).join(', ') || 'none'
+    console.log(`Config: ${CONFIG_FILE}`)
+    console.log(`Configured scope(s): ${scopes}`)
+    console.log(`Notes repo: ${config.NOTES_REPO ?? '(missing)'}`)
+    if (config.GITHUB_PROJECT_OWNER && config.GITHUB_PROJECT_NUMBER) {
+      console.log(`Project URL: https://github.com/users/${config.GITHUB_PROJECT_OWNER}/projects/${config.GITHUB_PROJECT_NUMBER}`)
+    }
+    if (config.DONE_TIMEOUT_SECS) {
+      console.log(`Idle timeout: ${Math.floor(Number(config.DONE_TIMEOUT_SECS) / 60)} min`)
+    }
+  }
+
+  if (activeSession) {
+    const { sessionId, state } = activeSession
+    console.log(`Current session: ${sessionId}`)
+    console.log(`Current status: ${state.status}`)
+    console.log(`Tracking paused: ${formatYesNo(Boolean(state.tracking_paused))}`)
+    console.log(`Issue: ${issueUrlFromState(state) ?? '(unavailable)'}`)
+    console.log(`Project status sync: ${describeBoardSync(state.project_status_sync)}`)
+  } else {
+    console.log('Current session: none')
+  }
+
+  if (projectStatusCache) {
+    const cacheDetail = projectStatusCache.last_error
+      ? `${projectStatusCache.last_status} (last error: ${projectStatusCache.last_error})`
+      : `${projectStatusCache.last_status} at ${projectStatusCache.last_synced_at}`
+    console.log(`Project status cache: ${cacheDetail}`)
+  }
+
+  if (runtimeStatus) {
+    const detail = runtimeStatus.reason === 'notes_repo_public'
+      ? `tracking blocked because ${runtimeStatus.repo} is public`
+      : runtimeStatus.reason === 'project_off_track'
+        ? `tracking blocked because the project board is OFF_TRACK`
+        : `tracking blocked: ${runtimeStatus.error ?? runtimeStatus.reason}`
+    console.log(`Runtime status: ${detail}`)
+  }
+}
+
+function runDoctor() {
+  const checks = []
+  const addCheck = (status, label, detail, help = null) => checks.push({ status, label, detail, help })
+  const install = getInstallState(process.cwd())
+  const config = install.config
+  const installedTargets = install.hookRegistrations.filter(target => target.installed)
+  const hasPython = hasCmd('python3')
+  const hasGh = hasCmd('gh')
+
+  addCheck(hasPython ? 'PASS' : 'FAIL', 'python3', hasPython ? 'python3 is available' : 'python3 is missing', 'Install Python 3 from https://python.org')
+  addCheck(hasGh ? 'PASS' : 'FAIL', 'gh', hasGh ? 'GitHub CLI is available' : 'GitHub CLI is missing', 'Install gh from https://cli.github.com/manual/installation')
+
+  if (hasGh) {
+    const authStatus = spawnSync('gh', ['auth', 'status'], { encoding: 'utf-8' })
+    addCheck(authStatus.status === 0 ? 'PASS' : 'FAIL', 'GitHub auth', authStatus.status === 0 ? 'authenticated' : 'not authenticated', 'Run `gh auth login --scopes "project,repo"`')
+    if (authStatus.status === 0) {
+      addCheck(hasRequiredScopes() ? 'PASS' : 'FAIL', 'GitHub scopes', hasRequiredScopes() ? 'project and repo scopes present' : 'required scopes are missing', 'Run `gh auth refresh --scopes "project,repo"`')
+    }
+  }
+
+  addCheck(config ? 'PASS' : 'FAIL', 'config.env', config ? `found at ${CONFIG_FILE}` : 'config.env not found', 'Run `npx claude-session-tracker` to install or reinstall')
+  addCheck(install.hookFilesPresent ? 'PASS' : 'FAIL', 'hook files', install.hookFilesPresent ? 'all hook files are present' : 'one or more installed hook files are missing', 'Re-run `npx claude-session-tracker`')
+
+  for (const target of install.hookRegistrations) {
+    if (target.invalid) {
+      addCheck('FAIL', `${target.scope} settings`, `${target.path} is not valid JSON`, `Fix or recreate ${target.path}`)
+    } else if (!target.exists) {
+      addCheck('WARN', `${target.scope} settings`, `${target.path} does not exist`, 'Only needed if you want tracker hooks in this scope')
+    } else if (target.installed) {
+      addCheck('PASS', `${target.scope} settings`, `tracker hooks registered in ${target.path}`)
+    } else {
+      addCheck('WARN', `${target.scope} settings`, `tracker hooks are not registered in ${target.path}`, 'Re-run setup only if you want tracker hooks in this scope')
+    }
+  }
+
+  if (installedTargets.length === 0) {
+    addCheck('FAIL', 'hook registration summary', 'tracker hooks are not registered in any settings.json', 'Run `npx claude-session-tracker` and choose reinstall if needed')
+  }
+
+  if (config && hasGh) {
+    try {
+      const isPrivate = ghRepoIsPrivate(config.NOTES_REPO)
+      addCheck(isPrivate ? 'PASS' : 'FAIL', 'NOTES_REPO visibility', isPrivate ? `${config.NOTES_REPO} is private` : `${config.NOTES_REPO} is public`, isPrivate ? null : 'Use a private repository for NOTES_REPO')
+    } catch (error) {
+      addCheck('FAIL', 'NOTES_REPO visibility', error.message, 'Verify the repository exists and that your gh token can access it')
+    }
+
+    try {
+      fetchProjectMetadata(config.GITHUB_PROJECT_OWNER, Number(config.GITHUB_PROJECT_NUMBER))
+      addCheck('PASS', 'project metadata', 'project metadata can be queried')
+    } catch (error) {
+      addCheck('FAIL', 'project metadata', error.message, 'Verify GITHUB_PROJECT_OWNER/GITHUB_PROJECT_NUMBER in config.env')
+    }
+  }
+
+  const invalidStates = listSessionStates().filter(entry => !entry.ok)
+  addCheck(invalidStates.length === 0 ? 'PASS' : 'FAIL', 'session state files', invalidStates.length === 0 ? 'all session state files are valid JSON' : `${invalidStates.length} invalid session state file(s) found`, invalidStates.length === 0 ? null : `Inspect or remove the invalid files under ${STATE_DIR}`)
+
+  for (const check of checks) {
+    console.log(`[${check.status}] ${check.label}: ${check.detail}`)
+    if (check.status !== 'PASS' && check.help) console.log(`  fix: ${check.help}`)
+  }
+
+  const hasFailures = checks.some(check => check.status === 'FAIL')
+  console.log(hasFailures ? 'Doctor summary: action needed' : 'Doctor summary: healthy')
+  process.exit(hasFailures ? 1 : 0)
+}
+
+function loadConfigOrExit() {
+  const config = readEnvFile(CONFIG_FILE)
+  if (!config) {
+    console.error('No installation found. Run `npx claude-session-tracker` first.')
+    process.exit(1)
+  }
+  return config
+}
+
+function updateSessionBoardSyncState(sessionId, state, result, status) {
+  const syncState = {
+    status,
+    attempted_at: new Date().toISOString(),
+    success: result.ok,
+  }
+  if (result.ok) {
+    syncState.synced_at = result.cache.last_synced_at
+    syncState.status_update_id = result.cache.status_update_id
+  } else {
+    syncState.error = result.error
+  }
+  state.project_status_sync = syncState
+  saveState(sessionId, state)
+}
+
+function runPause() {
+  const config = loadConfigOrExit()
+  const entry = findSessionByCwd(process.cwd())
+  if (!entry) {
+    console.log('No active tracked session found for this workspace.')
+    return
+  }
+
+  const { sessionId, state } = entry
+  state.tracking_paused = true
+  state.paused_at = new Date().toISOString()
+  state.pause_scope = 'session'
+  cancelTimerPid(state.timer_pid)
+  delete state.timer_pid
+  saveState(sessionId, state)
+
+  const result = syncProjectStatusCard(config, 'pause', state)
+  updateSessionBoardSyncState(sessionId, state, result, STATUS_ACTIONS.pause.boardStatus)
+
+  console.log('Local pause succeeded.')
+  if (!result.ok) {
+    console.log(`Board sync failed: ${result.error}`)
+    process.exit(1)
+  }
+  console.log('Project board marked OFF_TRACK.')
+}
+
+function runResume() {
+  const config = loadConfigOrExit()
+  const entry = findSessionByCwd(process.cwd(), { pausedOnly: true })
+  if (!entry) {
+    console.log('No paused tracked session found for this workspace.')
+    return
+  }
+
+  const { sessionId, state } = entry
+  const result = syncProjectStatusCard(config, 'resume', state)
+  updateSessionBoardSyncState(sessionId, state, result, STATUS_ACTIONS.resume.boardStatus)
+
+  if (!result.ok) {
+    console.log(`Board sync failed: ${result.error}`)
+    process.exit(1)
+  }
+
+  delete state.tracking_paused
+  delete state.paused_at
+  delete state.pause_scope
+  saveState(sessionId, state)
+  console.log('Project board marked ON_TRACK.')
+  console.log('Local tracking resumed.')
+}
+
+function normalizeChoiceValue(result) {
+  return typeof result === 'string' ? result : result?.toString?.() ?? ''
+}
+
+async function chooseRecommendedMapping(statusField, lang) {
+  const choices = statusField.options.map(option => ({ value: option.id, label: option.name }))
+  const recommendation = recommendStatusMapping(statusField.options, lang)
+  const initialMap = { ...recommendation.map }
+
+  if (Object.keys(recommendation.map).length > 0) {
+    const lines = ['Recommended status mappings:']
+    for (const key of ['registered', 'responding', 'waiting', 'closed']) {
+      const optionId = recommendation.map[key]
+      if (!optionId) continue
+      const optionName = statusField.options.find(option => option.id === optionId)?.name ?? optionId
+      lines.push(`  ${key} -> ${optionName}`)
+    }
+    p.note(lines.join('\n'), 'Recommended mapping')
+    const useRecommended = await p.confirm({ message: 'Use the recommended mappings where available?' })
+    if (p.isCancel(useRecommended)) onCancel()
+    if (!useRecommended) {
+      recommendation.unresolved = ['registered', 'responding', 'waiting', 'closed']
+      for (const key of Object.keys(initialMap)) delete initialMap[key]
+    }
+  }
+
+  const mapping = { ...initialMap }
+  const used = new Set(Object.values(mapping))
+
+  for (const key of ['registered', 'responding', 'waiting', 'closed']) {
+    if (mapping[key]) continue
+    const available = choices.filter(choice => !used.has(choice.value))
+    const selected = await p.select({
+      message: `${key.padEnd(17)} ->`,
+      options: available.length > 0 ? available : choices,
+    })
+    if (p.isCancel(selected)) onCancel()
+    mapping[key] = normalizeChoiceValue(selected)
+    used.add(mapping[key])
+  }
+
+  return mapping
+}
+
+function validateNotesRepoPrivate(notesRepo) {
+  const spin = p.spinner()
+  spin.start(`Checking repository visibility for ${notesRepo}...`)
+  try {
+    const isPrivate = ghRepoIsPrivate(notesRepo)
+    if (!isPrivate) {
+      spin.stop('Repository visibility check failed')
+      p.log.error(`Tracking repositories must be private. ${notesRepo} is public.`)
+      process.exit(1)
+    }
+    spin.stop('Repository visibility confirmed (private)')
+  } catch (error) {
+    spin.stop('Repository visibility check failed')
+    p.log.error(error.message)
+    process.exit(1)
+  }
+}
+
+function cleanupAutoSetupArtifacts(recovery) {
+  if (!recovery) return
+
+  if (recovery.projectId || recovery.projectNumber) {
+    try {
+      const projectId = recovery.projectId
+        ?? fetchProjectMetadata(recovery.owner, Number(recovery.projectNumber)).projectId
+      deleteProjectV2(projectId)
+    } catch {
+      // noop
+    }
+  }
+
+  if (recovery.repoFullName) {
+    try {
+      ghCommand(['repo', 'delete', recovery.repoFullName, '--yes'])
+    } catch {
+      // noop
+    }
+  }
+
+  clearAutoSetupRecovery()
+}
+
 // -- Star 요청 ----------------------------------------------------------------
 
 async function askForStar() {
   const alreadyStarred = spawnSync(
-    'gh', ['api', '/user/starred/ej31/claude-session-tracker'],
+    'gh',
+    ['api', '/user/starred/ej31/claude-session-tracker'],
     { stdio: 'ignore' },
   ).status === 0
 
@@ -434,7 +1254,8 @@ async function askForStar() {
   if (p.isCancel(wantStar) || !wantStar) return
 
   const result = spawnSync(
-    'gh', ['api', '-X', 'PUT', '/user/starred/ej31/claude-session-tracker'],
+    'gh',
+    ['api', '-X', 'PUT', '/user/starred/ej31/claude-session-tracker'],
     { stdio: 'ignore' },
   )
   if (result.status === 0) {
@@ -452,42 +1273,47 @@ async function uninstall() {
   p.intro(' Claude Session Tracker — Uninstall ')
 
   const confirmed = await p.confirm({ message: 'Remove all installed hooks and configuration?' })
-  if (p.isCancel(confirmed) || !confirmed) { p.cancel('Uninstall cancelled.'); process.exit(0) }
+  if (p.isCancel(confirmed) || !confirmed) {
+    p.cancel('Uninstall cancelled.')
+    process.exit(0)
+  }
 
   const spin = p.spinner()
   spin.start('Removing...')
 
   let removed = 0
-
-  for (const f of ALL_KNOWN_FILES) {
-    const target = join(HOOKS_DIR, f)
-    if (existsSync(target)) { unlinkSync(target); removed++ }
+  for (const file of ALL_KNOWN_FILES) {
+    const target = join(HOOKS_DIR, file)
+    if (existsSync(target)) {
+      unlinkSync(target)
+      removed++
+    }
   }
 
-  if (existsSync(CONFIG_FILE)) { unlinkSync(CONFIG_FILE); removed++ }
+  for (const path of [CONFIG_FILE, AUTO_SETUP_RECOVERY_FILE, PROJECT_STATUS_CACHE_FILE, RUNTIME_STATUS_FILE]) {
+    if (existsSync(path)) {
+      unlinkSync(path)
+      removed++
+    }
+  }
 
-  const logFile = join(HOOKS_DIR, 'hooks.log')
-  if (existsSync(logFile)) { unlinkSync(logFile); removed++ }
+  if (existsSync(STATE_DIR)) {
+    rmSync(STATE_DIR, { recursive: true })
+    removed++
+  }
 
-  if (existsSync(STATE_DIR)) { rmSync(STATE_DIR, { recursive: true }); removed++ }
-
-  const settingsPaths = [
-    join(HOME, '.claude', 'settings.json'),
-    join(process.cwd(), '.claude', 'settings.json'),
-  ]
-  for (const sp of settingsPaths) {
-    if (!existsSync(sp)) continue
-    const original = readJson(sp)
+  for (const { path } of getSettingsPaths(process.cwd())) {
+    if (!existsSync(path)) continue
+    const original = readJson(path)
     if (!original.hooks) continue
     const cleaned = removeOurHooks(original)
-    writeFileSync(sp, JSON.stringify(cleaned, null, 2) + '\n')
+    writeFileSync(path, JSON.stringify(cleaned, null, 2) + '\n')
     removed++
   }
 
   spin.stop(`Removal complete (${removed} items)`)
-
   p.note([
-    'Python scripts, config.env, state, and logs have been deleted.',
+    'Python scripts, config.env, state, recovery data, and status caches have been deleted.',
     'Hook entries have been removed from settings.json.',
     '',
     'Restart Claude Code to apply changes.',
@@ -499,211 +1325,248 @@ async function uninstall() {
 // -- Auto Setup ---------------------------------------------------------------
 
 async function autoSetup(username) {
-  // Language selection
-  const lang = await p.select({
-    message: 'Which language for status labels?',
-    options: [
-      { value: 'en', label: 'English', hint: 'Registered, Responding, Waiting, Closed' },
-      { value: 'ko', label: 'Korean', hint: '세션 등록, 답변 중, 입력 대기, 세션 종료' },
-      { value: 'ja', label: 'Japanese', hint: 'セッション登録, 応答中, 入力待ち, セッション終了' },
-      { value: 'zh', label: 'Chinese', hint: '会话注册, 响应中, 等待输入, 会话关闭' },
-    ],
-  })
-  if (p.isCancel(lang)) onCancel()
+  let recovery = loadAutoSetupRecovery()
+  if (recovery && !hasRecoveryStep(recovery, 'hooks_installed')) {
+    p.note([
+      `  Owner      : ${recovery.owner ?? username}`,
+      `  Repository : ${recovery.repoFullName ?? '(not created yet)'}`,
+      `  Project #  : ${recovery.projectNumber ?? '(not created yet)'}`,
+      `  Steps      : ${(recovery.completedSteps ?? []).join(', ') || 'none'}`,
+    ].join('\n'), 'Incomplete auto setup detected')
+
+    const action = await p.select({
+      message: 'How would you like to continue?',
+      options: [
+        { value: 'resume', label: 'Resume setup' },
+        { value: 'cleanup', label: 'Cleanup partial setup' },
+        { value: 'cancel', label: 'Cancel' },
+      ],
+    })
+    if (p.isCancel(action) || action === 'cancel') onCancel()
+    if (action === 'cleanup') {
+      cleanupAutoSetupArtifacts(recovery)
+      p.log.success('Partial auto setup has been cleaned up.')
+      recovery = null
+    }
+  } else {
+    recovery = null
+  }
+
+  let lang = recovery?.lang
+  if (!lang) {
+    lang = await p.select({
+      message: 'Which language for status labels?',
+      options: [
+        { value: 'en', label: 'English', hint: 'Registered, Responding, Waiting, Closed' },
+        { value: 'ko', label: 'Korean', hint: '세션 등록, 답변 중, 입력 대기, 세션 종료' },
+        { value: 'ja', label: 'Japanese', hint: 'セッション登録, 応答中, 入力待ち, セッション終了' },
+        { value: 'zh', label: 'Chinese', hint: '会话注册, 响应中, 等待输入, 会话关闭' },
+      ],
+    })
+    if (p.isCancel(lang)) onCancel()
+  }
+
+  if (!recovery) {
+    const repoName = `claude-session-storage-${randomBytes(3).toString('hex')}`
+    recovery = {
+      owner: username,
+      lang,
+      repoFullName: `${username}/${repoName}`,
+      projectTitle: 'Claude Session Tracker',
+      completedSteps: [],
+      updatedAt: new Date().toISOString(),
+    }
+    saveAutoSetupRecovery(recovery)
+  }
 
   const labels = STATUS_LABELS[lang]
-  const hash = randomBytes(3).toString('hex')
-  const repoName = `claude-session-storage-${hash}`
-  const repoFullName = `${username}/${repoName}`
-  const projectTitle = 'Claude Session Tracker'
-
   p.note([
     'A private repository will be created for storing session issues.',
     '',
-    `  Repository : ${repoFullName} (private)`,
-    `  Project    : ${projectTitle}`,
+    `  Repository : ${recovery.repoFullName} (private)`,
+    `  Project    : ${recovery.projectTitle}`,
     `  Statuses   : ${labels.registered}, ${labels.responding}, ${labels.waiting}, ${labels.closed}`,
-    `  Date fields : Session Created, Last Active`,
-    `  Scope      : Global`,
-    `  Timeout    : 30 min`,
+    `  Date fields: Session Created, Last Active`,
+    '  Scope      : Global',
+    '  Timeout    : 30 min',
   ].join('\n'), 'Setup plan')
 
-  const confirmed = await p.confirm({ message: 'Looks good? Ready to create everything?' })
-  if (p.isCancel(confirmed) || !confirmed) onCancel()
+  if (!hasRecoveryStep(recovery, 'repo_created')) {
+    const confirmed = await p.confirm({ message: 'Looks good? Ready to create everything?' })
+    if (p.isCancel(confirmed) || !confirmed) onCancel()
 
-  // Step 1: Create private repo
-  const repoSpin = p.spinner()
-  repoSpin.start('Creating private repository...')
-  try {
-    ghCommand([
-      'repo', 'create', repoFullName,
-      '--private',
-      '--description', 'Claude Code session tracking storage (auto-created)',
-    ])
-    repoSpin.stop('Repository created')
-  } catch (e) {
-    repoSpin.stop('Failed to create repository')
-    p.log.error(e.message)
-    process.exit(1)
+    const repoSpin = p.spinner()
+    repoSpin.start('Creating private repository...')
+    try {
+      ghCommand([
+        'repo',
+        'create',
+        recovery.repoFullName,
+        '--private',
+        '--description',
+        'Claude Code session tracking storage (auto-created)',
+      ])
+      repoSpin.stop('Repository created')
+      recovery = markAutoSetupStep(recovery, 'repo_created')
+    } catch (error) {
+      repoSpin.stop('Failed to create repository')
+      p.log.error(error.message)
+      process.exit(1)
+    }
   }
 
-  // Step 2: Create project, then look up its number via project list
-  const projSpin = p.spinner()
-  projSpin.start('Creating GitHub Project...')
-  let projectNumber
-  try {
-    ghCommand(['project', 'create', '--title', projectTitle, '--owner', username])
-    // gh project create produces no output — look up the project we just created
-    const listOutput = ghCommand(['project', 'list', '--owner', username, '--format', 'json', '--limit', '10'])
-    const projects = JSON.parse(listOutput).projects ?? []
-    const created = projects.find(proj => proj.title === projectTitle)
-    if (!created) throw new Error('Project was created but could not be found in project list.')
-    projectNumber = created.number
-    projSpin.stop(`Project created (#${projectNumber})`)
-  } catch (e) {
-    projSpin.stop('Failed to create project')
-    p.log.error(e.message)
-    process.exit(1)
+  if (!hasRecoveryStep(recovery, 'project_created')) {
+    const projectSpin = p.spinner()
+    projectSpin.start('Creating GitHub Project...')
+    try {
+      ghCommand(['project', 'create', '--title', recovery.projectTitle, '--owner', username])
+      const listOutput = ghCommand(['project', 'list', '--owner', username, '--format', 'json', '--limit', '20'])
+      const projects = JSON.parse(listOutput).projects ?? []
+      const created = projects.find(project => project.title === recovery.projectTitle)
+      if (!created) throw new Error('Project was created but could not be found in project list.')
+      projectSpin.stop(`Project created (#${created.number})`)
+      recovery = markAutoSetupStep(recovery, 'project_created', { projectNumber: created.number })
+    } catch (error) {
+      projectSpin.stop('Failed to create project')
+      p.log.error(error.message)
+      process.exit(1)
+    }
   }
 
-  // Step 3: Fetch project metadata
   const fetchSpin = p.spinner()
   fetchSpin.start('Fetching project metadata...')
-  let projectId, statusField
+  let projectMeta
   try {
-    const meta = fetchProjectMetadata(username, projectNumber)
-    projectId = meta.projectId
-    statusField = meta.statusField
+    projectMeta = fetchProjectMetadata(username, recovery.projectNumber)
     fetchSpin.stop('Project metadata fetched')
-  } catch (e) {
+    recovery = {
+      ...recovery,
+      projectId: projectMeta.projectId,
+      projectUrl: projectMeta.projectUrl,
+      statusFieldId: projectMeta.statusField.id,
+    }
+    saveAutoSetupRecovery(recovery)
+  } catch (error) {
     fetchSpin.stop('Failed to fetch project metadata')
-    p.log.error(e.message)
+    p.log.error(error.message)
     process.exit(1)
   }
 
-  // Step 4: Update Status field with custom options
-  const statusSpin = p.spinner()
-  statusSpin.start('Configuring status options...')
-  let statusMap
-  try {
-    const labelKeys = ['registered', 'responding', 'waiting', 'closed']
-    const options = labelKeys.map((key, i) => ({
-      name: labels[key],
-      color: STATUS_COLORS[i],
-      description: STATUS_DESCRIPTIONS[i],
-    }))
-
-    const mutation = `
-      mutation($fieldId: ID!, $options: [ProjectV2SingleSelectFieldOptionInput!]!) {
-        updateProjectV2Field(input: {
-          fieldId: $fieldId
-          singleSelectOptions: $options
-        }) {
-          projectV2Field {
-            ... on ProjectV2SingleSelectField {
-              options { id name }
+  if (!hasRecoveryStep(recovery, 'status_configured')) {
+    const statusSpin = p.spinner()
+    statusSpin.start('Configuring status options...')
+    try {
+      const labelKeys = ['registered', 'responding', 'waiting', 'closed']
+      const options = labelKeys.map((key, index) => ({
+        name: labels[key],
+        color: STATUS_COLORS[index],
+        description: STATUS_DESCRIPTIONS[index],
+      }))
+      const mutation = `
+        mutation($fieldId: ID!, $options: [ProjectV2SingleSelectFieldOptionInput!]!) {
+          updateProjectV2Field(input: {
+            fieldId: $fieldId
+            singleSelectOptions: $options
+          }) {
+            projectV2Field {
+              ... on ProjectV2SingleSelectField {
+                options { id name }
+              }
             }
           }
-        }
-      }`
-
-    const res = ghGraphql(mutation, { fieldId: statusField.id, options })
-    const updatedOptions = res.data?.updateProjectV2Field?.projectV2Field?.options
-    if (!updatedOptions) throw new Error('Failed to update status options. Unexpected response.')
-
-    // Map returned option IDs to config keys
-    statusMap = {}
-    for (const key of labelKeys) {
-      const match = updatedOptions.find(o => o.name === labels[key])
-      if (!match) throw new Error(`Could not find option ID for status: ${labels[key]}`)
-      statusMap[key] = match.id
+        }`
+      const response = ghGraphql(mutation, { fieldId: projectMeta.statusField.id, options })
+      const updatedOptions = response.data?.updateProjectV2Field?.projectV2Field?.options
+      if (!updatedOptions) throw new Error('Failed to configure status options.')
+      const statusMap = {}
+      for (const key of labelKeys) {
+        const match = updatedOptions.find(option => option.name === labels[key])
+        if (!match) throw new Error(`Could not find option ID for status: ${labels[key]}`)
+        statusMap[key] = match.id
+      }
+      statusSpin.stop('Status options configured')
+      recovery = markAutoSetupStep(recovery, 'status_configured', { statusMap })
+    } catch (error) {
+      statusSpin.stop('Failed to configure status options')
+      p.log.error(error.message)
+      process.exit(1)
     }
-
-    statusSpin.stop('Status options configured')
-  } catch (e) {
-    statusSpin.stop('Failed to configure status options')
-    p.log.error(e.message)
-    process.exit(1)
   }
 
-  // Step 4.5: Create custom date fields
-  const dateFieldSpin = p.spinner()
-  dateFieldSpin.start('Creating custom date fields...')
-  let createdFieldId, lastActiveFieldId
-  try {
-    const dateFieldMutation = `
-      mutation($projectId: ID!, $name: String!) {
-        createProjectV2Field(input: {
-          projectId: $projectId
-          name: $name
-          dataType: DATE
-        }) {
-          projectV2Field {
-            ... on ProjectV2Field {
-              id
-              name
+  if (!hasRecoveryStep(recovery, 'date_fields_attempted')) {
+    const dateFieldSpin = p.spinner()
+    dateFieldSpin.start('Creating custom date fields...')
+    let createdFieldId = recovery.createdFieldId
+    let lastActiveFieldId = recovery.lastActiveFieldId
+    try {
+      const mutation = `
+        mutation($projectId: ID!, $name: String!) {
+          createProjectV2Field(input: {
+            projectId: $projectId
+            name: $name
+            dataType: DATE
+          }) {
+            projectV2Field {
+              ... on ProjectV2Field {
+                id
+                name
+              }
             }
           }
-        }
-      }`
-
-    const createdRes = ghGraphql(dateFieldMutation, { projectId, name: 'Session Created' })
-    createdFieldId = createdRes.data?.createProjectV2Field?.projectV2Field?.id
-    if (!createdFieldId) {
-      const errMsg = createdRes.errors?.map(e => e.message).join(', ') || JSON.stringify(createdRes)
-      throw new Error(`Failed to create "Created" date field: ${errMsg}`)
+        }`
+      const createdRes = ghGraphql(mutation, { projectId: recovery.projectId, name: 'Session Created' })
+      createdFieldId = createdRes.data?.createProjectV2Field?.projectV2Field?.id
+      const lastActiveRes = ghGraphql(mutation, { projectId: recovery.projectId, name: 'Last Active' })
+      lastActiveFieldId = lastActiveRes.data?.createProjectV2Field?.projectV2Field?.id
+      dateFieldSpin.stop('Custom date fields created')
+    } catch (error) {
+      dateFieldSpin.stop('Skipped custom date fields (non-critical)')
+      p.log.warn(`Date fields could not be created: ${error.message}\n  This is optional — setup will continue without them.`)
     }
-
-    const lastActiveRes = ghGraphql(dateFieldMutation, { projectId, name: 'Last Active' })
-    lastActiveFieldId = lastActiveRes.data?.createProjectV2Field?.projectV2Field?.id
-    if (!lastActiveFieldId) {
-      const errMsg = lastActiveRes.errors?.map(e => e.message).join(', ') || JSON.stringify(lastActiveRes)
-      throw new Error(`Failed to create "Last Active" date field: ${errMsg}`)
-    }
-
-    dateFieldSpin.stop('Custom date fields created')
-  } catch (e) {
-    dateFieldSpin.stop('Skipped custom date fields (non-critical)')
-    p.log.warn(`Date fields could not be created: ${e.message}\n  This is optional — setup will continue without them.`)
+    recovery = markAutoSetupStep(recovery, 'date_fields_attempted', { createdFieldId, lastActiveFieldId })
   }
 
-  // Step 5: Install hooks
-  const installSpin = p.spinner()
-  installSpin.start('Installing hooks...')
-  try {
-    installHooksAndConfig({
-      owner: username,
-      projectNumber,
-      projectId,
-      statusFieldId: statusField.id,
-      statusMap,
-      notesRepo: repoFullName,
-      timeoutMinutes: 30,
-      scope: 'global',
-      createdFieldId,
-      lastActiveFieldId,
-      lang,
-    })
-    installSpin.stop('Hooks installed')
-  } catch (e) {
-    installSpin.stop('Failed to install hooks')
-    p.log.error(e.message)
-    process.exit(1)
+  if (!hasRecoveryStep(recovery, 'hooks_installed')) {
+    const installSpin = p.spinner()
+    installSpin.start('Installing hooks...')
+    try {
+      installHooksAndConfig({
+        owner: username,
+        projectNumber: recovery.projectNumber,
+        projectId: recovery.projectId,
+        statusFieldId: recovery.statusFieldId,
+        statusMap: recovery.statusMap,
+        notesRepo: recovery.repoFullName,
+        timeoutMinutes: 30,
+        scope: 'global',
+        createdFieldId: recovery.createdFieldId,
+        lastActiveFieldId: recovery.lastActiveFieldId,
+        lang,
+      })
+      installSpin.stop('Hooks installed')
+      recovery = markAutoSetupStep(recovery, 'hooks_installed')
+    } catch (error) {
+      installSpin.stop('Failed to install hooks')
+      p.log.error(error.message)
+      process.exit(1)
+    }
   }
 
-  const projectUrl = `https://github.com/users/${username}/projects/${projectNumber}`
+  ensureProjectReadmeAfterInstall(recovery.projectId)
+  ensureProjectOnTrackAfterInstall(recovery.projectId, process.cwd())
 
+  clearAutoSetupRecovery()
   p.note([
     'Everything is all set! Here\'s what to do next:',
     '',
     '  1. Start Claude Code and have any conversation',
-    `  2. Check your project board at: ${projectUrl}`,
+    `  2. Check your project board at: ${recovery.projectUrl}`,
     '',
     '  Session issues are stored in:',
-    `     https://github.com/${repoFullName}`,
+    `     https://github.com/${recovery.repoFullName}`,
   ].join('\n'), 'You\'re ready to go!')
 
-  p.outro(`Run Claude Code and start a conversation — then check ${projectUrl}`)
+  p.outro(`Run Claude Code and start a conversation — then check ${recovery.projectUrl}`)
 }
 
 // -- Manual Setup -------------------------------------------------------------
@@ -712,7 +1575,7 @@ async function manualSetup(username) {
   const owner = await p.text({
     message: 'GitHub Project Owner (username or org)',
     initialValue: username,
-    validate: v => !v?.trim() ? 'This field is required.' : undefined,
+    validate: value => !value?.trim() ? 'This field is required.' : undefined,
   })
   if (p.isCancel(owner)) onCancel()
   const ownerVal = owner.trim()
@@ -722,76 +1585,53 @@ async function manualSetup(username) {
   const number = await p.text({
     message: 'Project number',
     placeholder: '1',
-    validate: v => !v || isNaN(Number(v)) ? 'Please enter a number.' : undefined,
+    validate: value => !value || Number.isNaN(Number(value)) ? 'Please enter a number.' : undefined,
   })
   if (p.isCancel(number)) onCancel()
   const projectNumber = Number(number)
 
-  // Fetch project metadata
   const fetchSpin = p.spinner()
   fetchSpin.start('Fetching project metadata...')
-  let projectId, statusField, projectTitle, projectUrl
+  let projectMeta
   try {
-    const meta = fetchProjectMetadata(ownerVal, projectNumber)
-    projectId = meta.projectId
-    statusField = meta.statusField
-    projectTitle = meta.projectTitle
-    projectUrl = meta.projectUrl
-    fetchSpin.stop(`Found project: ${projectTitle}`)
-  } catch (e) {
+    projectMeta = fetchProjectMetadata(ownerVal, projectNumber)
+    fetchSpin.stop(`Found project: ${projectMeta.projectTitle}`)
+  } catch (error) {
     fetchSpin.stop('Failed to fetch project')
-    p.log.error(e.message)
+    p.log.error(error.message)
     process.exit(1)
   }
 
-  const statusOptions = statusField.options.map(o => `${o.name}`).join(', ')
+  const statusOptions = projectMeta.statusField.options.map(option => option.name).join(', ')
   p.note([
-    `  Name    : ${projectTitle}`,
-    `  URL     : ${projectUrl}`,
-    `  ID      : ${projectId}`,
+    `  Name    : ${projectMeta.projectTitle}`,
+    `  URL     : ${projectMeta.projectUrl}`,
+    `  ID      : ${projectMeta.projectId}`,
     `  Statuses: ${statusOptions}`,
   ].join('\n'), 'Project details')
 
   const rightProject = await p.confirm({ message: 'Is this the right project?' })
   if (p.isCancel(rightProject) || !rightProject) onCancel()
 
-  // Map each lifecycle stage to a status option
-  p.log.info('Map each Claude Code lifecycle stage to a Status option below. You can always change these later in ~/.claude/hooks/config.env')
-
-  const choices = statusField.options.map(o => ({ value: o.id, label: o.name }))
-
-  const registered = await p.select({ message: 'Session started       ->', options: choices })
-  if (p.isCancel(registered)) onCancel()
-
-  const responding = await p.select({ message: 'Claude is responding  ->', options: choices })
-  if (p.isCancel(responding)) onCancel()
-
-  const waiting = await p.select({ message: 'Waiting for user      ->', options: choices })
-  if (p.isCancel(waiting)) onCancel()
-
-  const closed = await p.select({ message: 'Session ended         ->', options: choices })
-  if (p.isCancel(closed)) onCancel()
-
-  const statusMap = { registered, responding, waiting, closed }
-
   const notesRepo = await p.text({
     message: 'Repository for session issues (when no git remote is available)',
     placeholder: `${ownerVal}/dev-notes`,
-    validate: v => !v?.includes('/') ? 'Please use owner/repo format.' : undefined,
+    validate: value => !value?.includes('/') ? 'Please use owner/repo format.' : undefined,
   })
   if (p.isCancel(notesRepo)) onCancel()
+  validateNotesRepoPrivate(notesRepo.trim())
 
   const timeout = await p.text({
     message: 'Session close timer (minutes)',
     initialValue: '30',
-    validate: v => !v || isNaN(Number(v)) ? 'Please enter a number.' : undefined,
+    validate: value => !value || Number.isNaN(Number(value)) ? 'Please enter a number.' : undefined,
   })
   if (p.isCancel(timeout)) onCancel()
 
   const scope = await p.select({
     message: 'Hook scope',
     options: [
-      { value: 'global',  label: 'Global              (~/.claude/settings.json)' },
+      { value: 'global', label: 'Global              (~/.claude/settings.json)' },
       { value: 'project', label: 'Current project     (.claude/settings.json)' },
     ],
   })
@@ -801,17 +1641,19 @@ async function manualSetup(username) {
     message: 'Which language for issue comments?',
     options: [
       { value: 'en', label: 'English', hint: 'Prompt, Response' },
-      { value: 'ko', label: 'Korean',  hint: '프롬프트, 답변' },
+      { value: 'ko', label: 'Korean', hint: '프롬프트, 답변' },
       { value: 'ja', label: 'Japanese', hint: 'プロンプト, 回答' },
       { value: 'zh', label: 'Chinese', hint: '提示词, 回答' },
     ],
   })
   if (p.isCancel(langManual)) onCancel()
 
-  // Confirm summary
+  p.log.info('Using recommended mappings where possible. You can still adjust anything below.')
+  const statusMap = await chooseRecommendedMapping(projectMeta.statusField, normalizeChoiceValue(langManual))
+
   const scopeLabel = scope === 'global' ? 'Global' : 'Current project'
   p.note([
-    `  Project    : ${projectTitle} (#${projectNumber})`,
+    `  Project    : ${projectMeta.projectTitle} (#${projectNumber})`,
     `  Notes Repo : ${notesRepo.trim()}`,
     `  Timeout    : ${timeout} min`,
     `  Scope      : ${scopeLabel}`,
@@ -820,50 +1662,49 @@ async function manualSetup(username) {
   const confirmed = await p.confirm({ message: 'Ready to install?' })
   if (p.isCancel(confirmed) || !confirmed) onCancel()
 
-  // Install
   const installSpin = p.spinner()
   installSpin.start('Installing hooks...')
   try {
     installHooksAndConfig({
       owner: ownerVal,
       projectNumber,
-      projectId,
-      statusFieldId: statusField.id,
+      projectId: projectMeta.projectId,
+      statusFieldId: projectMeta.statusField.id,
       statusMap,
       notesRepo: notesRepo.trim(),
       timeoutMinutes: Number(timeout),
-      scope,
-      lang: langManual,
+      scope: normalizeChoiceValue(scope),
+      lang: normalizeChoiceValue(langManual),
     })
     installSpin.stop('Hooks installed')
-  } catch (e) {
+  } catch (error) {
     installSpin.stop('Failed to install hooks')
-    p.log.error(e.message)
+    p.log.error(error.message)
     process.exit(1)
   }
+
+  ensureProjectReadmeAfterInstall(projectMeta.projectId)
+  ensureProjectOnTrackAfterInstall(projectMeta.projectId, process.cwd())
 
   p.note([
     'Everything is all set! Here\'s what to do next:',
     '',
     '  1. Start Claude Code and have any conversation',
-    `  2. Check your project board at: ${projectUrl}`,
+    `  2. Check your project board at: ${projectMeta.projectUrl}`,
     '',
     '  Session issues are stored in:',
     `     https://github.com/${notesRepo.trim()}`,
   ].join('\n'), 'You\'re ready to go!')
 
-  p.outro(`Run Claude Code and start a conversation — then check ${projectUrl}`)
+  p.outro(`Run Claude Code and start a conversation — then check ${projectMeta.projectUrl}`)
 }
 
 // -- Main ---------------------------------------------------------------------
 
-async function main() {
-  if (process.argv.includes('uninstall')) return uninstall()
-
+async function runSetup() {
   console.clear()
   p.intro(' Claude Session Tracker — Setup ')
 
-  // Environment check
   const envSpin = p.spinner()
   envSpin.start('Checking environment...')
 
@@ -896,37 +1737,31 @@ async function main() {
   }
 
   const authCheck = spawnSync('gh', ['auth', 'status'], { encoding: 'utf-8' })
-
   if (authCheck.status !== 0) {
-    // 미인증 → 설치 플로우 안에서 로그인 유도
     envSpin.stop('GitHub authentication required')
     p.log.warn('GitHub authentication is required. Starting login...')
-
     try {
       await runGhAuthLogin()
       p.log.success('GitHub login successful')
-    } catch (err) {
-      p.log.error(err.message)
+    } catch (error) {
+      p.log.error(error.message)
       p.outro('Setup aborted.')
       process.exit(1)
     }
   } else if (!hasRequiredScopes()) {
-    // 인증됨 + 스코프 부족 → 스코프 보충
     envSpin.stop('Missing required GitHub scopes')
     p.log.warn('The scopes project and repo are required. Adding them now.')
-
     try {
       await runGhAuthRefresh()
       p.log.success('Scopes added successfully')
-    } catch (err) {
-      p.log.error(err.message)
+    } catch (error) {
+      p.log.error(error.message)
       p.outro('Setup aborted.')
       process.exit(1)
     }
   }
   envSpin.stop('Environment looks good')
 
-  // Detect authenticated user
   const username = getAuthenticatedUser()
   if (!username) {
     p.log.error('Could not detect your GitHub username. Please make sure `gh auth login` is completed.')
@@ -936,7 +1771,6 @@ async function main() {
 
   p.log.message(`Hey ${username}! Let's set up session tracking for Claude Code.`)
 
-  // Detect existing installation
   if (existsSync(CONFIG_FILE)) {
     p.log.warn('An existing installation was detected.')
     p.note([
@@ -961,7 +1795,6 @@ async function main() {
     }
   }
 
-  // Choose setup mode
   const mode = await p.select({
     message: 'How would you like to set up?',
     options: [
@@ -980,4 +1813,38 @@ async function main() {
   await askForStar()
 }
 
-main().catch(e => { console.error(e.message); process.exit(1) })
+async function main() {
+  const command = process.argv[2]
+
+  if (command === 'status') {
+    printStatus()
+    return
+  }
+
+  if (command === 'doctor') {
+    runDoctor()
+    return
+  }
+
+  if (command === 'pause') {
+    runPause()
+    return
+  }
+
+  if (command === 'resume') {
+    runResume()
+    return
+  }
+
+  if (command === 'uninstall') {
+    await uninstall()
+    return
+  }
+
+  await runSetup()
+}
+
+main().catch((error) => {
+  console.error(error.message)
+  process.exit(1)
+})

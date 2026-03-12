@@ -13,8 +13,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from cst_github_utils import (
     add_issue_comment,
+    clear_runtime_status,
+    get_tracker_project_status_update,
+    is_tracker_board_off_track,
+    is_tracking_paused,
     load_env_file,
     load_state,
+    save_runtime_status,
     setup_logger,
 )
 
@@ -38,6 +43,26 @@ def main() -> int:
     state = load_state(session_id)
     if not state:
         return 0
+
+    if is_tracking_paused(state):
+        logger.info(f"tracking paused → AskUserQuestion 저장 생략: {session_id[:8]}…")
+        return 0
+
+    try:
+        if is_tracker_board_off_track():
+            status_update = get_tracker_project_status_update() or {}
+            save_runtime_status({
+                "status": "blocked",
+                "reason": "project_off_track",
+                "cwd": state.get("cwd", ""),
+                "checked_at": datetime.now().isoformat(),
+                "status_update_id": status_update.get("id"),
+            })
+            logger.info(f"project board OFF_TRACK → AskUserQuestion 저장 생략: {session_id[:8]}…")
+            return 0
+        clear_runtime_status()
+    except Exception as e:
+        logger.error(f"project status 확인 실패: {e}")
 
     repo = state.get("repo")
     issue_number = state.get("issue_number")
