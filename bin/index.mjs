@@ -60,6 +60,40 @@ function hasCmd(cmd) {
   return result.status === 0
 }
 
+function getGitHubRepoFromCwd(cwd = process.cwd()) {
+  const result = spawnSync('git', ['-C', cwd, 'remote', 'get-url', 'origin'], {
+    encoding: 'utf-8',
+    timeout: 5000,
+  })
+  if (result.status !== 0) return null
+
+  const url = result.stdout.trim().replace(/\.git$/, '')
+  if (!url.includes('github.com')) return null
+
+  if (url.startsWith('https://')) {
+    const parts = url.split('/')
+    return `${parts.at(-2)}/${parts.at(-1)}`
+  }
+
+  if (url.includes(':')) {
+    return url.split(':').at(-1) ?? null
+  }
+
+  return null
+}
+
+function getContextRepoExample(fallbackRepo) {
+  return getGitHubRepoFromCwd() ?? fallbackRepo
+}
+
+function getProjectNameDisplayExamples(contextRepo, samplePrompt = 'Fix session resume bug') {
+  return {
+    prefixTitle: `[${contextRepo}] ${samplePrompt}`,
+    labelTitle: samplePrompt,
+    labelName: contextRepo,
+  }
+}
+
 // -- gh 자동 설치 -------------------------------------------------------------
 
 function detectLinuxDistro() {
@@ -369,7 +403,20 @@ function fetchProjectMetadata(owner, number) {
   return { projectId: pv2.id, projectTitle: pv2.title, projectUrl: pv2.url, statusField }
 }
 
-function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId, statusMap, notesRepo, timeoutMinutes, scope, createdFieldId, lastActiveFieldId, lang }) {
+function installHooksAndConfig({
+  owner,
+  projectNumber,
+  projectId,
+  statusFieldId,
+  statusMap,
+  notesRepo,
+  timeoutMinutes,
+  scope,
+  createdFieldId,
+  lastActiveFieldId,
+  lang,
+  projectNameMode,
+}) {
   mkdirSync(HOOKS_DIR, { recursive: true })
   mkdirSync(STATE_DIR, { recursive: true })
 
@@ -389,6 +436,7 @@ function installHooksAndConfig({ owner, projectNumber, projectId, statusFieldId,
     `GITHUB_STATUS_CLOSED=${statusMap.closed}`,
     `NOTES_REPO=${notesRepo}`,
     `DONE_TIMEOUT_SECS=${Number(timeoutMinutes) * 60}`,
+    `CST_PROJECT_NAME_MODE=${projectNameMode}`,
   ]
   if (createdFieldId) configLines.push(`GITHUB_CREATED_FIELD_ID=${createdFieldId}`)
   if (lastActiveFieldId) configLines.push(`GITHUB_LAST_ACTIVE_FIELD_ID=${lastActiveFieldId}`)
@@ -516,6 +564,9 @@ async function autoSetup(username) {
   const repoName = `claude-session-storage-${hash}`
   const repoFullName = `${username}/${repoName}`
   const projectTitle = 'Claude Session Tracker'
+  const projectNameMode = 'label'
+  const contextRepoExample = getContextRepoExample(repoFullName)
+  const displayExamples = getProjectNameDisplayExamples(contextRepoExample)
 
   p.note([
     'A private repository will be created for storing session issues.',
@@ -523,7 +574,11 @@ async function autoSetup(username) {
     `  Repository : ${repoFullName} (private)`,
     `  Project    : ${projectTitle}`,
     `  Statuses   : ${labels.registered}, ${labels.responding}, ${labels.waiting}, ${labels.closed}`,
-    `  Date fields : Session Created, Last Active`,
+    `  Date fields: Session Created, Last Active`,
+    `  Display    : Label mode`,
+    `  Example    : Issue title "${displayExamples.labelTitle}"`,
+    `  Labels     : claude-code, ${displayExamples.labelName}`,
+    `  Repo source: Current workspace repo if available, otherwise ${repoFullName}`,
     `  Scope      : Global`,
     `  Timeout    : 30 min`,
   ].join('\n'), 'Setup plan')
@@ -683,6 +738,7 @@ async function autoSetup(username) {
       createdFieldId,
       lastActiveFieldId,
       lang,
+      projectNameMode,
     })
     installSpin.stop('Hooks installed')
   } catch (e) {
@@ -780,6 +836,31 @@ async function manualSetup(username) {
     validate: v => !v?.includes('/') ? 'Please use owner/repo format.' : undefined,
   })
   if (p.isCancel(notesRepo)) onCancel()
+  const notesRepoValue = notesRepo.trim()
+
+  const contextRepoExample = getContextRepoExample(notesRepoValue)
+  const displayExamples = getProjectNameDisplayExamples(contextRepoExample)
+  p.note([
+    'Choose how the active project name should appear on each issue.',
+    `  Context source: Current workspace repo if available, otherwise ${notesRepoValue}`,
+    '',
+    '  Prefix in issue title',
+    `  Issue title: ${displayExamples.prefixTitle}`,
+    '  Labels     : claude-code',
+    '',
+    '  Label in GitHub Projects',
+    `  Issue title: ${displayExamples.labelTitle}`,
+    `  Labels     : claude-code, ${displayExamples.labelName}`,
+  ].join('\n'), 'Project name display')
+
+  const projectNameMode = await p.select({
+    message: 'How should the project name be shown?',
+    options: [
+      { value: 'prefix', label: 'Prefix in issue title', hint: 'Shows [owner/repo] before the latest prompt' },
+      { value: 'label', label: 'Label in GitHub Projects', hint: 'Keeps the title clean and stores owner/repo as a label' },
+    ],
+  })
+  if (p.isCancel(projectNameMode)) onCancel()
 
   const timeout = await p.text({
     message: 'Session close timer (minutes)',
@@ -812,7 +893,8 @@ async function manualSetup(username) {
   const scopeLabel = scope === 'global' ? 'Global' : 'Current project'
   p.note([
     `  Project    : ${projectTitle} (#${projectNumber})`,
-    `  Notes Repo : ${notesRepo.trim()}`,
+    `  Notes Repo : ${notesRepoValue}`,
+    `  Display    : ${projectNameMode === 'prefix' ? 'Prefix in issue title' : 'Label in GitHub Projects'}`,
     `  Timeout    : ${timeout} min`,
     `  Scope      : ${scopeLabel}`,
   ].join('\n'), 'Setup summary')
@@ -830,10 +912,11 @@ async function manualSetup(username) {
       projectId,
       statusFieldId: statusField.id,
       statusMap,
-      notesRepo: notesRepo.trim(),
+      notesRepo: notesRepoValue,
       timeoutMinutes: Number(timeout),
       scope,
       lang: langManual,
+      projectNameMode,
     })
     installSpin.stop('Hooks installed')
   } catch (e) {
@@ -849,7 +932,7 @@ async function manualSetup(username) {
     `  2. Check your project board at: ${projectUrl}`,
     '',
     '  Session issues are stored in:',
-    `     https://github.com/${notesRepo.trim()}`,
+    `     https://github.com/${notesRepoValue}`,
   ].join('\n'), 'You\'re ready to go!')
 
   p.outro(`Run Claude Code and start a conversation — then check ${projectUrl}`)

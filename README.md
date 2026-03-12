@@ -49,6 +49,7 @@ The installer creates **everything** for you automatically —
 - A private repository for storing session issues
 - A GitHub Project with all status options configured
 - Custom date fields (`Session Created`, `Last Active`)
+- Project context shown as GitHub labels by default
 - Claude Code hooks, globally installed
 
 All you do is pick a language and confirm. That's it.
@@ -82,6 +83,7 @@ When you chat with Claude Code, the tracker automatically
 - Records every prompt you type
 - Records every response Claude gives
 - Updates the issue title with your latest prompt (so you can scan history at a glance)
+- Shows the active project either as an issue title prefix or as an issue label
 - Tracks session status: Registered → Responding → Waiting → Closed
 - Auto-assigns issues to you
 - Saves timestamps for everything
@@ -123,11 +125,16 @@ This session is being tracked at https://github.com/you/repo/issues/42
 
 **Smart title updates**
 
-Issue title auto-updates with your latest prompt —
+Issue title auto-updates with your latest prompt. You can choose one of two display modes during setup —
 ```
-[project-name] your latest prompt here...
+[ej31/claude-session-tracker] Fix session resume bug
 ```
-Long project names get truncated at 20 chars.
+Prefix mode keeps the project in the title.
+
+```
+Fix session resume bug
+```
+Label mode keeps the title clean and stores the project as an issue label like `ej31/claude-session-tracker`.
 
 **Resume without duplicates**
 
@@ -135,7 +142,7 @@ Resume a session with `claude --resume`? Tracker reuses the same GitHub Issue in
 
 **Git remote auto-detection**
 
-Has a GitHub remote? We use it for the issue title prefix. Issues always land in your configured storage repo.
+Has a GitHub remote? We use the current workspace repo as `owner/repo`. If not, we fall back to your configured `NOTES_REPO`. Issues always land in your configured storage repo.
 
 **Zero blocking**
 
@@ -199,6 +206,7 @@ GITHUB_STATUS_WAITING=...
 GITHUB_STATUS_CLOSED=...
 NOTES_REPO=your-username/dev-notes
 DONE_TIMEOUT_SECS=1800
+CST_PROJECT_NAME_MODE=prefix
 ```
 
 ---
@@ -225,13 +233,14 @@ Files we install to `~/.claude/hooks/`
 
 Pick this if you already have a GitHub Project you want to use.
 
-The wizard asks you ~6 questions —
+The wizard asks you ~7 questions —
 1. **GitHub Project Owner** — your username or org
 2. **GitHub Project Number** — grab it from your project URL
 3. **Status mapping** — connect your Project's Status field to our lifecycle stages
 4. **Default repo** — fallback when there's no git remote
-5. **Idle timeout** — how long before we auto-close (default: 30 mins)
-6. **Scope** — this project only, or go global
+5. **Project name display** — `Prefix in issue title` or `Label in GitHub Projects`
+6. **Idle timeout** — how long before we auto-close (default: 30 mins)
+7. **Scope** — this project only, or go global
 
 Then use Claude Code like normal. Everything flows to GitHub Projects automatically.
 

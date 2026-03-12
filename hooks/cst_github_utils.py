@@ -9,7 +9,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 LOG_FILE = Path("~/.claude/hooks/hooks.log").expanduser()
 _CONFIG_ENV = Path("~/.claude/hooks/config.env").expanduser()
@@ -134,6 +134,14 @@ def _done_timeout() -> int:
 
 def _notes_repo() -> str:
     return _require("NOTES_REPO")
+
+
+def _project_name_mode() -> str:
+    """프로젝트명 표시 방식 (prefix|label, 기본값 prefix)"""
+    mode = os.environ.get("CST_PROJECT_NAME_MODE", "prefix").strip().lower()
+    if mode in {"prefix", "label"}:
+        return mode
+    return "prefix"
 
 
 # ─── GraphQL ─────────────────────────────────────────────────────────────────
@@ -278,15 +286,23 @@ def add_issue_comment(repo: str, issue_number: int, body: str) -> None:
 
 
 def create_repo_issue_and_add_to_project(
-    repo: str, title: str, body: str
+    repo: str, title: str, body: str, labels: Optional[Sequence[str]] = None
 ) -> Tuple[str, int]:
     """실제 Issue 생성 + Project에 연결. 반환: (item_id, issue_number)"""
-    ensure_label(repo, CLAUDE_CODE_LABEL)
+    issue_labels = []
+    for label in [CLAUDE_CODE_LABEL, *(labels or [])]:
+        if label and label not in issue_labels:
+            ensure_label(repo, label)
+            issue_labels.append(label)
 
     me = subprocess.run(
         ["gh", "api", "user", "--jq", ".login"],
         capture_output=True, text=True, timeout=10,
     ).stdout.strip()
+
+    label_fields = []
+    for label in issue_labels:
+        label_fields.extend(["--field", f"labels[]={label}"])
 
     result = subprocess.run(
         [
@@ -294,7 +310,7 @@ def create_repo_issue_and_add_to_project(
             "--method", "POST",
             "--field", f"title={title}",
             "--field", f"body={body}",
-            "--field", f"labels[]={CLAUDE_CODE_LABEL}",
+            *label_fields,
             *(["--field", f"assignees[]={me}"] if me else []),
             "--jq", ".node_id, .number",
         ],
@@ -364,6 +380,35 @@ def ensure_label(repo: str, label: str) -> None:
          "--color", "0075ca", "--description", "Claude Code session", "--force"],
         capture_output=True, timeout=10,
     )
+
+
+def add_issue_label(repo: str, issue_number: int, label: str) -> None:
+    """이슈에 label 추가"""
+    ensure_label(repo, label)
+    result = subprocess.run(
+        ["gh", "issue", "edit", str(issue_number), "--repo", repo, "--add-label", label],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"라벨 추가 실패: {result.stderr.strip()}")
+
+
+def get_context_repo(cwd: str) -> str:
+    """작업 컨텍스트를 대표하는 owner/repo 반환"""
+    git_repo = get_git_repo(cwd)
+    if git_repo:
+        return git_repo
+    try:
+        return _notes_repo()
+    except RuntimeError:
+        return Path(cwd).name or "workspace"
+
+
+def get_context_label(cwd: str) -> str:
+    """하위 호환용 alias"""
+    return get_context_repo(cwd)
 
 
 # ─── 상태 탐색 / 타이머 ──────────────────────────────────────────────────────

@@ -7,7 +7,6 @@ resume이면 기존 item을 찾아서 재활성화
 from __future__ import annotations
 
 import json
-import logging
 import socket
 import sys
 from datetime import datetime
@@ -17,10 +16,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from cst_github_utils import (
     _created_field_id,
     _notes_repo,
+    _project_name_mode,
     cancel_timer,
     create_repo_issue_and_add_to_project,
     find_active_state_by_cwd,
-    get_git_repo,
+    get_context_repo,
     is_resume,
     load_env_file,
     load_state,
@@ -103,19 +103,28 @@ def main() -> int:
         f"**Transcript:** `{transcript_path}`  \n"
     )
 
-    git_repo = get_git_repo(cwd)  # 제목 prefix용 (이슈 생성 위치와 무관)
+    project_name_mode = _project_name_mode()
+    context_repo = get_context_repo(cwd)
+    add_context_label = project_name_mode == "label" and bool(context_repo)
     item_id = None
     issue_number = None
 
     try:
         notes_repo = _notes_repo()
-        # 이슈는 항상 notes_repo에 생성, git_repo는 제목 prefix에만 사용
-        if git_repo:
-            logger.info(f"GitHub repo 감지: {git_repo} → {notes_repo}에 Issue 생성")
+        # 이슈는 항상 notes_repo에 생성, 프로젝트 컨텍스트는 설정에 따라 제목 prefix 또는 라벨로 사용
+        if add_context_label:
+            logger.info(
+                f"프로젝트 라벨 모드: {context_repo} → {notes_repo}에 Issue 생성"
+            )
         else:
-            logger.info(f"git remote 없음 → {notes_repo}에 Issue 생성")
+            logger.info(
+                f"프로젝트 prefix 모드: {context_repo} → {notes_repo}에 Issue 생성"
+            )
         item_id, issue_number = create_repo_issue_and_add_to_project(
-            notes_repo, title, body
+            notes_repo,
+            title,
+            body,
+            labels=[context_repo] if add_context_label else None,
         )
 
         set_item_status(item_id, "registered")
@@ -126,10 +135,11 @@ def main() -> int:
             "cwd": cwd,
             "repo": notes_repo,
             "issue_number": issue_number,
+            "context_repo": context_repo,
             "status": "registered",
             "created_at": datetime.now().isoformat(),
         })
-        logger.info(f"item 생성 완료: {item_id} repo={repo}")
+        logger.info(f"item 생성 완료: {item_id} repo={notes_repo}")
 
         # Created 날짜 설정
         created_fid = _created_field_id()
@@ -142,7 +152,7 @@ def main() -> int:
                 logger.error(f"Created 필드 설정 실패: {e}")
 
         # 사용자에게 이슈 URL 안내 (stdout → Claude가 system-reminder로 수신)
-        issue_url = f"https://github.com/{repo}/issues/{issue_number}"
+        issue_url = f"https://github.com/{notes_repo}/issues/{issue_number}"
         print(
             f"This session is being tracked at {issue_url} — "
             f"Please inform the user that this conversation is being recorded at this URL. "

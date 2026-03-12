@@ -6,7 +6,6 @@ Claude Code UserPromptSubmit hook
 from __future__ import annotations
 
 import json
-import logging
 import sys
 from pathlib import Path
 
@@ -14,10 +13,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 from cst_github_utils import (
     _comment_labels,
     _last_active_field_id,
+    _project_name_mode,
     _project_url,
+    add_issue_label,
     add_issue_comment,
     cancel_timer,
-    get_git_repo,
+    get_context_repo,
     load_env_file,
     load_state,
     save_state,
@@ -101,21 +102,41 @@ def main() -> int:
     issue_number = state.get("issue_number")
     if repo and issue_number and prompt_text:
         try:
-            cwd = state.get("cwd", "")
-            git_repo = get_git_repo(cwd) if cwd else None
-            if git_repo:
-                # GitHub repo인 경우: [owner/repo] 형식
-                prefix = git_repo
+            project_name_mode = _project_name_mode()
+            context_repo = state.get("context_repo") or state.get("context_label")
+            if not context_repo:
+                cwd = state.get("cwd", "")
+                context_repo = get_context_repo(cwd) if cwd else ""
+                if context_repo:
+                    state["context_repo"] = context_repo
+                    save_state(session_id, state)
+
+            if project_name_mode == "prefix" and context_repo:
+                prefix = context_repo
+                if len(prefix) > 30:
+                    prefix = prefix[:30] + "..."
+                title = f"[{prefix}] {prompt_text}"[:80]
             else:
-                # git repo가 아닌 경우: 폴더 이름
-                prefix = Path(cwd).name
-            if len(prefix) > 30:
-                prefix = prefix[:30] + "..."
-            title = f"[{prefix}] {prompt_text}"[:80]
+                title = prompt_text[:80]
             update_issue_title(repo, issue_number, title)
             logger.info(f"이슈 제목 업데이트: {title}")
         except Exception as e:
             logger.error(f"이슈 제목 업데이트 실패: {e}")
+
+    if repo and issue_number and _project_name_mode() == "label":
+        try:
+            context_repo = state.get("context_repo") or state.get("context_label")
+            if not context_repo:
+                cwd = state.get("cwd", "")
+                context_repo = get_context_repo(cwd) if cwd else ""
+                if context_repo:
+                    state["context_repo"] = context_repo
+                    save_state(session_id, state)
+            if context_repo:
+                add_issue_label(repo, issue_number, context_repo)
+                logger.info(f"컨텍스트 라벨 보정: {context_repo}")
+        except Exception as e:
+            logger.error(f"컨텍스트 라벨 보정 실패: {e}")
 
     # 프롬프트를 이슈 댓글로 저장
     if repo and issue_number and prompt_text:
