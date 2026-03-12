@@ -25,7 +25,9 @@ Each Claude Code session is assigned to its own issue, making it easy to revisit
 ## Demo
 
 <p>
-  <img alt="GitHub Issue with session comments" src="https://github.com/user-attachments/assets/0f8ca148-a5bc-4c08-ac45-93aafc407962" />
+  
+  <img alt="GitHub Issue with session comments" width="3540" height="2061" alt="image" src="https://github.com/user-attachments/assets/2728a791-b1cc-40d8-9158-f18c6bd39f6b" />
+
 </p>
 
 ## Quick Start
