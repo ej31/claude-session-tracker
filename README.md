@@ -36,11 +36,6 @@ No config files to write. No tokens to paste. Just run the installer and forget 
 npx claude-session-tracker
 ```
 
-> [!NOTE]
-> Nightly builds are published to npm before the next stable release.
-> Use `npx claude-session-tracker@nightly` to try the latest Context Operator changes early.
-> For details, see the [latest nightly release notes](https://github.com/ej31/claude-session-tracker/releases).
-
 ### What the installer does
 
 Everything is automatic. You just pick a language and hit enter.
