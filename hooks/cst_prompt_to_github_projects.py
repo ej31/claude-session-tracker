@@ -18,12 +18,9 @@ from cst_github_utils import (
     add_issue_label,
     add_issue_comment,
     cancel_timer,
-    clear_runtime_status,
+    check_project_board_status,
     get_context_repo,
-    get_tracker_project_status_update,
-    is_tracker_board_inactive,
     is_tracking_paused,
-    save_runtime_status,
     load_env_file,
     load_state,
     save_state,
@@ -78,24 +75,13 @@ def main() -> int:
         logger.info(f"tracking paused → 프롬프트 처리 생략: {session_id[:8]}…")
         return 0
 
-    try:
-        if is_tracker_board_inactive():
-            status_update = get_tracker_project_status_update() or {}
-            save_runtime_status({
-                "status": "blocked",
-                "reason": "project_inactive",
-                "cwd": state.get("cwd", ""),
-                "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "status_update_id": status_update.get("id"),
-            })
-            cancel_timer(state)
-            state.pop("timer_pid", None)
-            save_state(session_id, state)
-            logger.info(f"project board INACTIVE → 프롬프트 처리 생략: {session_id[:8]}…")
-            return 0
-        clear_runtime_status()
-    except Exception as e:
-        logger.error(f"project status 확인 실패: {e}")
+    board_reason = check_project_board_status(state.get("cwd", ""), logger)
+    if board_reason:
+        cancel_timer(state)
+        state.pop("timer_pid", None)
+        save_state(session_id, state)
+        logger.info(f"project board {board_reason} → 프롬프트 처리 생략: {session_id[:8]}…")
+        return 0
 
     # 첫 프롬프트 시 GitHub Project URL 안내
     if not state.get("first_prompt_notified"):

@@ -14,14 +14,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from cst_github_utils import (
     _done_timeout,
-    clear_runtime_status,
+    check_project_board_status,
     close_issue,
-    get_tracker_project_status_update,
-    is_tracker_board_inactive,
     is_tracking_paused,
     load_env_file,
     load_state,
-    save_runtime_status,
     save_state,
     set_item_status,
 )
@@ -62,23 +59,12 @@ def main() -> int:
         save_state(session_id, state)
         return 0
 
-    try:
-        if is_tracker_board_inactive():
-            status_update = get_tracker_project_status_update() or {}
-            save_runtime_status({
-                "status": "blocked",
-                "reason": "project_inactive",
-                "cwd": state.get("cwd", ""),
-                "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "status_update_id": status_update.get("id"),
-            })
-            state.pop("timer_pid", None)
-            save_state(session_id, state)
-            logger.info(f"project board INACTIVE → 자동 종료 생략: {session_id[:8]}…")
-            return 0
-        clear_runtime_status()
-    except Exception as e:
-        logger.error(f"project status 확인 실패: {e}")
+    board_reason = check_project_board_status(state.get("cwd", ""), logger)
+    if board_reason:
+        state.pop("timer_pid", None)
+        save_state(session_id, state)
+        logger.info(f"project board {board_reason} → 자동 종료 생략: {session_id[:8]}…")
+        return 0
 
     try:
         set_item_status(item_id, "closed")

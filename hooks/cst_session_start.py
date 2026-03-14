@@ -20,14 +20,12 @@ from cst_github_utils import (
     _notes_repo,
     _project_name_mode,
     check_for_update,
+    check_project_board_status,
     cleanup_stale_sessions,
-    clear_runtime_status,
     cancel_timer,
     create_repo_issue_and_add_to_project,
     find_active_state_by_cwd,
     get_context_repo,
-    get_tracker_project_status_update,
-    is_tracker_board_inactive,
     is_repo_private,
     is_resume,
     load_env_file,
@@ -114,24 +112,25 @@ def main() -> int:
         )
         return 0
 
-    try:
-        if is_tracker_board_inactive():
-            status_update = get_tracker_project_status_update() or {}
-            save_runtime_status({
-                "status": "blocked",
-                "reason": "project_inactive",
-                "cwd": cwd,
-                "checked_at": datetime.now().isoformat(),
-                "status_update_id": status_update.get("id"),
-            })
-            logger.info("project board가 INACTIVE 이므로 세션 등록 생략")
+    board_reason = check_project_board_status(cwd, logger)
+    if board_reason:
+        if board_reason == "project_public":
+            print(
+                "Tracking is disabled because the configured project board is PUBLIC. "
+                "Session data may contain sensitive information. "
+                "Please make the project private or re-run setup."
+            )
+        elif board_reason == "project_closed":
+            print(
+                "Tracking is disabled because the configured project board is CLOSED. "
+                "Please re-run setup to create a new project."
+            )
+        else:
             print(
                 "Tracking is disabled because the configured project board is currently INACTIVE. "
                 "Resume tracking before starting a tracked session."
             )
-            return 0
-    except Exception as e:
-        logger.error(f"project status 확인 실패: {e}")
+        return 0
 
     # 오래된 고아 세션 자동 정리 (비정상 종료 등 대비)
     try:

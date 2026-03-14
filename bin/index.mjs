@@ -697,6 +697,7 @@ function fetchProjectMetadata(owner, number) {
           title
           url
           closed
+          public
           fields(first: 30) {
             nodes {
               ... on ProjectV2SingleSelectField {
@@ -714,6 +715,7 @@ function fetchProjectMetadata(owner, number) {
           title
           url
           closed
+          public
           fields(first: 30) {
             nodes {
               ... on ProjectV2SingleSelectField {
@@ -730,20 +732,22 @@ function fetchProjectMetadata(owner, number) {
   const project = response.data?.user?.projectV2 ?? response.data?.organization?.projectV2
   if (!project) throw new Error('Could not find the project. Please check the owner and project number.')
   if (project.closed) throw new Error('This project is closed. Please use an open project.')
+  if (project.public) throw new Error('This project is public. Session data may contain sensitive information. Please use a private project.')
   const statusField = project.fields.nodes.find(field => field?.name === 'Status')
   if (!statusField) throw new Error("Could not find a 'Status' field in this project.")
   return { projectId: project.id, projectTitle: project.title, projectUrl: project.url, statusField }
 }
 
-function isProjectClosed(projectId) {
+function getProjectStatus(projectId) {
   const query = `
     query($projectId: ID!) {
       node(id: $projectId) {
-        ... on ProjectV2 { closed }
+        ... on ProjectV2 { closed, public }
       }
     }`
   const response = ghGraphql(query, { projectId })
-  return response.data?.node?.closed === true
+  const node = response.data?.node ?? {}
+  return { closed: node.closed === true, public: node.public === true }
 }
 
 function deleteProjectV2(projectId) {
@@ -1607,9 +1611,19 @@ async function autoSetup(username) {
       const hasAllRequiredFields = meta != null && META_REQUIRED_FIELDS.every(f => meta[f] != null)
 
       if (hasAllRequiredFields) {
-        // 기존 프로젝트가 closed 상태인지 확인
-        if (isProjectClosed(meta.projectId)) {
-          p.log.warn(`Existing project #${meta.projectNumber} is closed. A new project will be created.`)
+        // 기존 프로젝트가 closed 또는 public 상태인지 확인 (단일 GraphQL 호출)
+        const projectStatus = getProjectStatus(meta.projectId)
+
+        if (projectStatus.closed || projectStatus.public) {
+          if (projectStatus.closed) {
+            p.log.warn(`Existing project #${meta.projectNumber} is closed. A new project will be created.`)
+          } else {
+            p.log.warn(`Existing project #${meta.projectNumber} is PUBLIC. Session data may contain sensitive information.`)
+            p.log.warn('A new private project will be created.')
+          }
+          try { deleteProjectV2(meta.projectId) } catch (e) {
+            p.log.warn(`Failed to delete old project: ${e.message ?? e}`)
+          }
           recovery = {
             owner: username,
             lang,
