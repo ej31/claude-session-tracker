@@ -278,6 +278,7 @@ def get_tracker_project_status_update() -> Optional[dict]:
     query($projectId: ID!) {
       node(id: $projectId) {
         ... on ProjectV2 {
+          closed
           statusUpdates(first: 20, orderBy: { field: CREATED_AT, direction: DESC }) {
             nodes {
               id
@@ -291,11 +292,14 @@ def get_tracker_project_status_update() -> Optional[dict]:
     }
     """
     result = graphql_request(query, {"projectId": _project_id()})
-    nodes = result.get("data", {}).get("node", {}).get("statusUpdates", {}).get("nodes", [])
-    for node in nodes:
-        body = node.get("body") or ""
+    node = result.get("data", {}).get("node", {})
+    if node.get("closed"):
+        return {"_project_closed": True}
+    nodes = node.get("statusUpdates", {}).get("nodes", [])
+    for n in nodes:
+        body = n.get("body") or ""
         if PROJECT_STATUS_MARKER in body:
-            return node
+            return n
     return None
 
 
@@ -303,6 +307,8 @@ def is_tracker_board_inactive() -> bool:
     status_update = get_tracker_project_status_update()
     if not status_update:
         return False
+    if status_update.get("_project_closed"):
+        return True
     return status_update.get("status") == "INACTIVE"
 
 

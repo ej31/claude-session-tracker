@@ -696,6 +696,7 @@ function fetchProjectMetadata(owner, number) {
           id
           title
           url
+          closed
           fields(first: 30) {
             nodes {
               ... on ProjectV2SingleSelectField {
@@ -712,6 +713,7 @@ function fetchProjectMetadata(owner, number) {
           id
           title
           url
+          closed
           fields(first: 30) {
             nodes {
               ... on ProjectV2SingleSelectField {
@@ -727,6 +729,7 @@ function fetchProjectMetadata(owner, number) {
   const response = ghGraphql(query, { login: owner, number })
   const project = response.data?.user?.projectV2 ?? response.data?.organization?.projectV2
   if (!project) throw new Error('Could not find the project. Please check the owner and project number.')
+  if (project.closed) throw new Error('This project is closed. Please use an open project.')
   const statusField = project.fields.nodes.find(field => field?.name === 'Status')
   if (!statusField) throw new Error("Could not find a 'Status' field in this project.")
   return { projectId: project.id, projectTitle: project.title, projectUrl: project.url, statusField }
