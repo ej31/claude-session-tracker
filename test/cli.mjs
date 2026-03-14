@@ -230,12 +230,20 @@ if (args[0] === 'api' && args[1] === 'graphql') {
     process.exit(0)
   }
 
-  if (query.includes('deleteProjectV2')) {
-    respond(JSON.stringify({ data: { deleteProjectV2: { projectV2: { id: 'PVT_project' } } } }))
+  if (query.includes('updateProjectV2') && query.includes('closed')) {
+    respond(JSON.stringify({ data: { updateProjectV2: { projectV2: { id: payload.variables.projectId } } } }))
     process.exit(0)
   }
 
   respond(JSON.stringify({ data: {} }))
+  process.exit(0)
+}
+
+if (args[0] === 'repo' && args[1] === 'edit') {
+  process.exit(0)
+}
+
+if (args[0] === 'repo' && args[1] === 'archive') {
   process.exit(0)
 }
 
