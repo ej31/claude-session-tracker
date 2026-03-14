@@ -748,6 +748,31 @@ function getAuthenticatedUser() {
   return result.stdout.trim()
 }
 
+function fetchUserOrgs() {
+  const result = spawnSync('gh', ['api', 'user/orgs', '--jq', '.[].login'], { encoding: 'utf-8' })
+  if (result.status !== 0 || !result.stdout?.trim()) return []
+  return result.stdout.trim().split('\n').filter(Boolean)
+}
+
+function fetchOwnerProjects(owner) {
+  const result = spawnSync(
+    'gh',
+    ['project', 'list', '--owner', owner, '--format', 'json', '--limit', '50'],
+    { encoding: 'utf-8' },
+  )
+  if (result.status !== 0 || !result.stdout?.trim()) return []
+  try {
+    const parsed = JSON.parse(result.stdout)
+    return (parsed.projects ?? []).map(project => ({
+      number: project.number,
+      title: project.title,
+      url: project.url,
+    }))
+  } catch {
+    return []
+  }
+}
+
 function fetchProjectMetadata(owner, number) {
   const query = `
     query($login: String!, $number: Int!) {
@@ -1849,34 +1874,98 @@ async function autoSetup(username) {
 // -- Manual Setup -------------------------------------------------------------
 
 async function manualSetup(username) {
-  const owner = await p.text({
-    message: 'GitHub Project Owner (username or org)',
-    initialValue: username,
-    validate: value => !value?.trim() ? 'This field is required.' : undefined,
+  const orgSpin = p.spinner()
+  orgSpin.start('Fetching available owners...')
+  const orgs = fetchUserOrgs()
+  orgSpin.stop(`Found ${orgs.length + 1} available owner(s)`)
+
+  const ownerOptions = [
+    { value: username, label: username, hint: 'Your personal account' },
+    ...orgs.map(org => ({ value: org, label: org, hint: 'Organization' })),
+  ]
+
+  const owner = await p.select({
+    message: 'GitHub Project Owner',
+    options: ownerOptions,
   })
   if (p.isCancel(owner)) onCancel()
-  const ownerVal = owner.trim()
+  const ownerVal = owner
 
-  p.log.info(`If you don't have a project yet, no worries! Create one at: https://github.com/${ownerVal}?tab=projects`)
+  const projectSpin = p.spinner()
+  projectSpin.start(`Fetching projects for ${ownerVal}...`)
+  const existingProjects = fetchOwnerProjects(ownerVal)
+  projectSpin.stop(`Found ${existingProjects.length} project(s) for ${ownerVal}`)
 
-  const number = await p.text({
-    message: 'Project number',
-    placeholder: '1',
-    validate: value => !value || Number.isNaN(Number(value)) ? 'Please enter a number.' : undefined,
+  const projectAction = await p.select({
+    message: 'How would you like to select a project?',
+    options: [
+      ...(existingProjects.length > 0
+        ? [{ value: 'existing', label: 'Select from existing projects', hint: `${existingProjects.length} project(s) found` }]
+        : []),
+      { value: 'create', label: 'Create a new project' },
+    ],
   })
-  if (p.isCancel(number)) onCancel()
-  const projectNumber = Number(number)
+  if (p.isCancel(projectAction)) onCancel()
 
-  const fetchSpin = p.spinner()
-  fetchSpin.start('Fetching project metadata...')
+  let projectNumber
   let projectMeta
-  try {
-    projectMeta = fetchProjectMetadata(ownerVal, projectNumber)
-    fetchSpin.stop(`Found project: ${projectMeta.projectTitle}`)
-  } catch (error) {
-    fetchSpin.stop('Failed to fetch project')
-    p.log.error(error.message)
-    process.exit(1)
+
+  if (projectAction === 'existing') {
+    const selectedProject = await p.select({
+      message: 'Select a project',
+      options: existingProjects.map(proj => ({
+        value: proj.number,
+        label: `#${proj.number} ${proj.title}`,
+        hint: proj.url,
+      })),
+    })
+    if (p.isCancel(selectedProject)) onCancel()
+    projectNumber = selectedProject
+
+    const fetchSpin = p.spinner()
+    fetchSpin.start('Fetching project metadata...')
+    try {
+      projectMeta = fetchProjectMetadata(ownerVal, projectNumber)
+      fetchSpin.stop(`Found project: ${projectMeta.projectTitle}`)
+    } catch (error) {
+      fetchSpin.stop('Failed to fetch project')
+      p.log.error(error.message)
+      process.exit(1)
+    }
+  } else {
+    const projectTitle = await p.text({
+      message: 'New project title',
+      placeholder: `${username}'s Claude Session Tracker`,
+      validate: value => !value?.trim() ? 'This field is required.' : undefined,
+    })
+    if (p.isCancel(projectTitle)) onCancel()
+
+    const createSpin = p.spinner()
+    createSpin.start('Creating GitHub Project...')
+    try {
+      ghCommand(['project', 'create', '--title', projectTitle.trim(), '--owner', ownerVal])
+      const listOutput = ghCommand(['project', 'list', '--owner', ownerVal, '--format', 'json', '--limit', '20'])
+      const projects = JSON.parse(listOutput).projects ?? []
+      const created = projects.find(proj => proj.title === projectTitle.trim())
+      if (!created) throw new Error('Project was created but could not be found in project list.')
+      projectNumber = created.number
+      createSpin.stop(`Project created (#${projectNumber})`)
+    } catch (error) {
+      createSpin.stop('Failed to create project')
+      p.log.error(error.message)
+      process.exit(1)
+    }
+
+    const fetchSpin = p.spinner()
+    fetchSpin.start('Fetching project metadata...')
+    try {
+      projectMeta = fetchProjectMetadata(ownerVal, projectNumber)
+      fetchSpin.stop(`Found project: ${projectMeta.projectTitle}`)
+    } catch (error) {
+      fetchSpin.stop('Failed to fetch project')
+      p.log.error(error.message)
+      process.exit(1)
+    }
   }
 
   const statusOptions = projectMeta.statusField.options.map(option => option.name).join(', ')
@@ -1891,8 +1980,9 @@ async function manualSetup(username) {
   if (p.isCancel(rightProject) || !rightProject) onCancel()
 
   const notesRepo = await p.text({
-    message: 'Repository for session issues (when no git remote is available)',
+    message: 'Repository for storing Claude Code session issues',
     placeholder: `${ownerVal}/dev-notes`,
+    hint: 'Each Claude Code session will be recorded as a GitHub Issue in this repository',
     validate: value => !value?.includes('/') ? 'Please use owner/repo format.' : undefined,
   })
   if (p.isCancel(notesRepo)) onCancel()
@@ -1905,20 +1995,20 @@ async function manualSetup(username) {
     'Choose how the active project name should appear on each issue.',
     `  Context source: Current workspace repo if available, otherwise ${notesRepoValue}`,
     '',
+    '  Label in GitHub Projects (Recommended)',
+    `  Issue title: ${displayExamples.labelTitle}`,
+    `  Labels     : claude-code, ${displayExamples.labelName}`,
+    '',
     '  Prefix in issue title',
     `  Issue title: ${displayExamples.prefixTitle}`,
     '  Labels     : claude-code',
-    '',
-    '  Label in GitHub Projects',
-    `  Issue title: ${displayExamples.labelTitle}`,
-    `  Labels     : claude-code, ${displayExamples.labelName}`,
   ].join('\n'), 'Project name display')
 
   const projectNameMode = await p.select({
     message: 'How should the project name be shown?',
     options: [
+      { value: 'label', label: 'Label in GitHub Projects (Recommended)', hint: 'Keeps the title clean and stores owner/repo as a label' },
       { value: 'prefix', label: 'Prefix in issue title', hint: 'Shows [owner/repo] before the latest prompt' },
-      { value: 'label', label: 'Label in GitHub Projects', hint: 'Keeps the title clean and stores owner/repo as a label' },
     ],
   })
   if (p.isCancel(projectNameMode)) onCancel()
@@ -1926,6 +2016,7 @@ async function manualSetup(username) {
   const timeout = await p.text({
     message: 'Session close timer (minutes)',
     initialValue: '30',
+    hint: 'After this period of inactivity, the session is automatically marked as closed',
     validate: value => !value || Number.isNaN(Number(value)) ? 'Please enter a number.' : undefined,
   })
   if (p.isCancel(timeout)) onCancel()
@@ -1933,8 +2024,8 @@ async function manualSetup(username) {
   const scope = await p.select({
     message: 'Hook scope',
     options: [
-      { value: 'global', label: 'Global              (~/.claude/settings.json)' },
-      { value: 'project', label: 'Current project     (.claude/settings.json)' },
+      { value: 'global', label: 'Global (Recommended)', hint: 'Tracks sessions across all projects (~/.claude/settings.json)' },
+      { value: 'project', label: 'Current project only', hint: 'Tracks sessions only in this project (.claude/settings.json)' },
     ],
   })
   if (p.isCancel(scope)) onCancel()
