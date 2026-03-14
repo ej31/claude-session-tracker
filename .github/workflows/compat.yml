@@ -36,10 +36,6 @@ jobs:
           npm install -g claude-session-tracker-*.tgz
         shell: bash
 
-      - name: Verify global binary exists
-        run: claude-session-tracker --help || claude-session-tracker 2>&1 | head -5
-        shell: bash
-
       - name: Verify status subcommand
         run: claude-session-tracker status
         shell: bash

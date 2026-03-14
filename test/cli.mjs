@@ -442,10 +442,11 @@ function testInstallHelperConfiguresReadmeAndOnTrack() {
   })
   unlinkSync(tempModule)
 
+  if (result.stderr) console.error('  [debug] install helper stderr:', result.stderr.trim())
   assert.equal(result.status, 0)
   const ghState = JSON.parse(readFileSync(env.ghStatePath, 'utf-8'))
-  assertOk('install helper writes project readme', ghState.projectReadme.includes('do not manually change'))
-  assertOk('install helper creates ON_TRACK entry', ghState.statusUpdates.length === 1 && ghState.statusUpdates[0].status === 'ON_TRACK')
+  assertOk('install helper writes project readme', typeof ghState.projectReadme === 'string' && ghState.projectReadme.includes('do not manually change'))
+  assertOk('install helper creates ON_TRACK entry', Array.isArray(ghState.statusUpdates) && ghState.statusUpdates.length === 1 && ghState.statusUpdates[0].status === 'ON_TRACK')
 }
 
 function testSessionStartBlocksPublicRepo() {
