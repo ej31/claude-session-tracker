@@ -832,18 +832,46 @@ function buildProjectReadme() {
   return [
     '# Claude Session Tracker',
     '',
-    'This project is managed by `claude-session-tracker`.',
+    'This project board automatically records and organizes every Claude Code session you run.',
+    'Each time you start a Claude Code conversation, a GitHub Issue is created and added to this board as a project item.',
+    'The issue captures the full session lifecycle — from the initial prompt, through tool calls and responses, to the final summary.',
     '',
-    '## Managed status flag',
+    'You can use this board to review past sessions, search conversation history, and keep track of what Claude has done across all your projects.',
     '',
-    '- `ON_TRACK` means local tracking is enabled.',
-    '- `INACTIVE` means local tracking is paused.',
+    '## How it works',
     '',
-    '> Warning: do not manually change the tracker `ON_TRACK` / `INACTIVE` status values. Use `claude-session-tracker pause` and `claude-session-tracker resume` instead.',
+    '1. When a Claude Code session starts, a new GitHub Issue is created with session metadata (workspace, timestamp, session ID).',
+    '2. As the session progresses, prompts and responses are appended to the issue as comments.',
+    '3. When the session ends or goes idle, the issue is automatically closed and the project item status is updated.',
+    '4. All items are organized on this board with status columns (Registered, Responding, Waiting, Closed).',
+    '',
+    '## Project board status (ON_TRACK / INACTIVE)',
+    '',
+    '- **`ON_TRACK`** — Session tracking is active. Every Claude Code session will be recorded to this board.',
+    '- **`INACTIVE`** — Session tracking is paused. No new sessions will be recorded until tracking is resumed.',
+    '',
+    '### How to change the tracking status',
+    '',
+    'You can switch between `ON_TRACK` and `INACTIVE` in two ways.',
+    '',
+    '**Option 1 — From the GitHub web UI**',
+    '',
+    'Open this project board on GitHub, click the status badge, and change it directly to `ON_TRACK` or `INACTIVE`.',
+    '',
+    '**Option 2 — From the command line**',
+    '',
+    '```bash',
+    '# Resume tracking (set to ON_TRACK)',
+    'npx claude-session-tracker resume',
+    '',
+    '# Pause tracking (set to INACTIVE)',
+    'npx claude-session-tracker pause',
+    '```',
     '',
     '## History',
     '',
-    'Each local install / pause / resume action writes a project status update that includes session metadata such as workspace, timestamp, issue URL, and local IP.',
+    'Each install, pause, and resume action writes a project status update with session metadata (workspace, timestamp, issue URL, and local IP).',
+    'You can review these updates in the project board\'s status update history.',
   ].join('\n')
 }
 
@@ -864,16 +892,37 @@ function updateProjectReadme(projectId, readme) {
   return response.data?.updateProjectV2?.projectV2
 }
 
+function updateProjectDescription(projectId, shortDescription) {
+  const mutation = `
+    mutation($projectId: ID!, $shortDescription: String!) {
+      updateProjectV2(input: {
+        projectId: $projectId
+        shortDescription: $shortDescription
+      }) {
+        projectV2 {
+          id
+          shortDescription
+        }
+      }
+    }`
+  const response = ghGraphql(mutation, { projectId, shortDescription })
+  return response.data?.updateProjectV2?.projectV2
+}
+
 function ensureProjectReadmeAfterInstall(projectId) {
   const spin = p.spinner()
-  spin.start('Configuring project README...')
+  spin.start('Configuring project README and description...')
   try {
     updateProjectReadme(projectId, buildProjectReadme())
-    spin.stop('Project README configured')
+    updateProjectDescription(
+      projectId,
+      'Automatically tracks all Claude Code sessions. Set status to ON_TRACK to enable tracking, INACTIVE to pause.',
+    )
+    spin.stop('Project README and description configured')
     return true
   } catch (error) {
-    spin.stop('Could not configure project README')
-    p.log.warn(`The install completed, but setting the project README failed: ${error.message}`)
+    spin.stop('Could not configure project README/description')
+    p.log.warn(`The install completed, but setting the project README/description failed: ${error.message}`)
     return false
   }
 }

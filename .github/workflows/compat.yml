@@ -1,13 +1,14 @@
-name: OS compatibility
+name: Install E2E
 
 on:
   push:
-    branches: [feat/gh-auto-install]
+    branches: [main]
   pull_request:
 
 jobs:
-  test:
+  e2e:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
@@ -22,5 +23,25 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run compatibility tests
+      - name: Run unit tests
         run: node test/compat.mjs
+
+      - name: Pack and install globally
+        run: |
+          npm pack
+          npm install -g claude-session-tracker-*.tgz
+        shell: bash
+
+      - name: Verify status subcommand
+        run: claude-session-tracker status
+        shell: bash
+
+      - name: Verify doctor subcommand
+        run: claude-session-tracker doctor 2>&1 || true
+        shell: bash
+
+      - name: Verify npx execution
+        run: |
+          npm uninstall -g claude-session-tracker
+          npx --yes ./claude-session-tracker-*.tgz status
+        shell: bash
