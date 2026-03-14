@@ -19,6 +19,7 @@ from cst_github_utils import (
     _created_field_id,
     _notes_repo,
     _project_name_mode,
+    check_for_update,
     cleanup_stale_sessions,
     clear_runtime_status,
     cancel_timer,
@@ -54,6 +55,18 @@ def get_local_ip() -> str:
 
 def main() -> int:
     load_env_file()
+
+    # 업데이트 알림 (24시간 캐싱, 실패 시 무시)
+    try:
+        latest = check_for_update(logger)
+        if latest:
+            current = os.environ.get("CST_VERSION", "unknown")
+            print(
+                f"Update available: {current} → {latest}. "
+                f"Run: npx claude-session-tracker update"
+            )
+    except Exception:
+        pass
 
     try:
         input_data = json.load(sys.stdin)

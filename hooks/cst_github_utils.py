@@ -683,3 +683,76 @@ def find_active_state_by_cwd(cwd: str) -> Optional[Tuple[dict, str]]:
         return None
     _, state, session_id = max(candidates)
     return state, session_id
+
+
+# ─── 업데이트 체크 ─────────────────────────────────────────────────────────────
+
+_UPDATE_CHECK_CACHE = Path("~/.claude/hooks/update_check.json").expanduser()
+_UPDATE_CHECK_INTERVAL_SECS = 86400  # 24시간
+_NPM_REGISTRY_URL = "https://registry.npmjs.org/claude-session-tracker/latest"
+_NPM_REGISTRY_TIMEOUT_SECS = 5
+
+
+def _parse_semver(version: str) -> Tuple[int, ...]:
+    """시맨틱 버전 문자열을 비교 가능한 튜플로 변환"""
+    try:
+        return tuple(int(x) for x in version.strip().split("."))
+    except (ValueError, AttributeError):
+        return (0, 0, 0)
+
+
+def check_for_update(logger: logging.Logger) -> Optional[str]:
+    """npm 레지스트리에서 최신 버전을 확인하고, 업데이트가 있으면 최신 버전 문자열 반환.
+
+    24시간 캐싱으로 네트워크 요청을 최소화한다.
+    실패 시 None을 반환하며 hook 실행을 방해하지 않는다.
+    """
+    import time
+    import urllib.request
+    import urllib.error
+
+    current_version = os.environ.get("CST_VERSION", "") or "0.0.0"
+
+    # 캐시 확인 — 24시간 이내 체크했으면 캐시 결과 사용
+    try:
+        if _UPDATE_CHECK_CACHE.exists():
+            with open(_UPDATE_CHECK_CACHE, encoding="utf-8") as f:
+                cache = json.load(f)
+            last_check = cache.get("checked_at", 0)
+            if time.time() - last_check < _UPDATE_CHECK_INTERVAL_SECS:
+                cached_latest = cache.get("latest_version", "")
+                if cached_latest and _parse_semver(cached_latest) > _parse_semver(current_version):
+                    return cached_latest
+                return None
+    except Exception:
+        pass
+
+    # npm 레지스트리에서 최신 버전 조회
+    try:
+        req = urllib.request.Request(
+            _NPM_REGISTRY_URL,
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=_NPM_REGISTRY_TIMEOUT_SECS) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        latest_version = data.get("version", "")
+    except (urllib.error.URLError, OSError, json.JSONDecodeError, Exception) as e:
+        logger.debug(f"Update check failed (ignored): {e}")
+        return None
+
+    # 캐시 저장
+    try:
+        with open(_UPDATE_CHECK_CACHE, "w", encoding="utf-8") as f:
+            json.dump({
+                "latest_version": latest_version,
+                "current_version": current_version,
+                "checked_at": time.time(),
+            }, f)
+    except Exception:
+        pass
+
+    if _parse_semver(latest_version) > _parse_semver(current_version):
+        logger.info(f"New version detected: {current_version} → {latest_version}")
+        return latest_version
+
+    return None
