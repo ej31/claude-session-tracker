@@ -424,6 +424,17 @@ function sessionStorageRepoExists(username) {
   return result.status === 0 && result.stdout?.trim() === `${username}/${SESSION_STORAGE_REPO_NAME}`
 }
 
+function findAvailableRepoName(username) {
+  // 기존 repo가 public으로 변경된 경우, 충돌 없는 새 이름을 찾는다.
+  const MAX_SUFFIX = 10
+  for (let i = 2; i <= MAX_SUFFIX; i++) {
+    const candidate = `${SESSION_STORAGE_REPO_NAME}-${i}`
+    const result = spawnSync('gh', ['api', `repos/${username}/${candidate}`], { stdio: 'pipe' })
+    if (result.status !== 0) return `${username}/${candidate}`
+  }
+  throw new Error(`Could not find an available repository name (tried up to ${SESSION_STORAGE_REPO_NAME}-${MAX_SUFFIX})`)
+}
+
 function fetchMetaJsonFromRepo(repoFullName) {
   const result = spawnSync(
     'gh',
@@ -1426,25 +1437,8 @@ async function runUpdate() {
 
 function cleanupAutoSetupArtifacts(recovery) {
   if (!recovery) return
-
-  if (recovery.projectId || recovery.projectNumber) {
-    try {
-      const projectId = recovery.projectId
-        ?? fetchProjectMetadata(recovery.owner, Number(recovery.projectNumber)).projectId
-      deleteProjectV2(projectId)
-    } catch {
-      // noop
-    }
-  }
-
-  if (recovery.repoFullName) {
-    try {
-      ghCommand(['repo', 'delete', recovery.repoFullName, '--yes'])
-    } catch {
-      // noop
-    }
-  }
-
+  // 기존 프로젝트/저장소는 삭제하지 않고 recovery 파일만 정리한다.
+  // 세션 데이터가 포함된 리소스는 사용자가 직접 관리해야 한다.
   clearAutoSetupRecovery()
 }
 
@@ -1601,11 +1595,23 @@ async function autoSetup(username) {
 
       // 기존 리포지토리가 private 인지 검증
       if (!ghRepoIsPrivate(repoFullName)) {
-        p.log.error(`Repository ${repoFullName} is PUBLIC. Session data may contain sensitive secrets.`)
-        p.log.error('Please make the repository private before continuing, or delete it and re-run setup.')
-        process.exit(1)
+        const newRepoFullName = findAvailableRepoName(username)
+        p.log.warn(`Repository ${repoFullName} is no longer private.`)
+        p.log.warn('Session data must always be stored in a private repository to protect sensitive information.')
+        p.log.warn(`A new private repository will be created: ${newRepoFullName}`)
+        recovery = {
+          owner: username,
+          lang,
+          repoFullName: newRepoFullName,
+          projectTitle,
+          completedSteps: [],
+          updatedAt: new Date().toISOString(),
+        }
+        saveAutoSetupRecovery(recovery)
+        // 새 repo/project를 처음부터 생성하므로 기존 검사를 건너뛴다
       }
 
+      if (!recovery) {
       const meta = fetchMetaJsonFromRepo(repoFullName)
       const META_REQUIRED_FIELDS = ['projectId', 'projectNumber', 'statusFieldId', 'statusMap']
       const hasAllRequiredFields = meta != null && META_REQUIRED_FIELDS.every(f => meta[f] != null)
@@ -1618,11 +1624,9 @@ async function autoSetup(username) {
           if (projectStatus.closed) {
             p.log.warn(`Existing project #${meta.projectNumber} is closed. A new project will be created.`)
           } else {
-            p.log.warn(`Existing project #${meta.projectNumber} is PUBLIC. Session data may contain sensitive information.`)
+            p.log.warn(`Existing project #${meta.projectNumber} is no longer private.`)
+            p.log.warn('Session data must always be stored in a private project to protect sensitive information.')
             p.log.warn('A new private project will be created.')
-          }
-          try { deleteProjectV2(meta.projectId) } catch (e) {
-            p.log.warn(`Failed to delete old project: ${e.message ?? e}`)
           }
           recovery = {
             owner: username,
@@ -1670,6 +1674,7 @@ async function autoSetup(username) {
         }
         saveAutoSetupRecovery(recovery)
       }
+      } // if (!recovery) - repo가 public이면 이 블록 전체를 건너뛴다
     } else {
       checkSpin.stop('No existing session storage found')
       recovery = {
