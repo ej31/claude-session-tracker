@@ -18,11 +18,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 from cst_github_utils import (
     _created_field_id,
     _notes_repo,
+    _project_name_mode,
     clear_runtime_status,
     cancel_timer,
     create_repo_issue_and_add_to_project,
     find_active_state_by_cwd,
-    get_git_repo,
+    get_context_repo,
     get_tracker_project_status_update,
     is_tracker_board_off_track,
     is_repo_private,
@@ -161,18 +162,27 @@ def main() -> int:
         f"**Transcript:** `{transcript_path}`  \n"
     )
 
-    git_repo = get_git_repo(cwd)  # 제목 prefix용 (이슈 생성 위치와 무관)
+    project_name_mode = _project_name_mode()
+    context_repo = get_context_repo(cwd)
+    add_context_label = project_name_mode == "label" and bool(context_repo)
     item_id = None
     issue_number = None
 
     try:
-        # 이슈는 항상 notes_repo에 생성, git_repo는 제목 prefix에만 사용
-        if git_repo:
-            logger.info(f"GitHub repo 감지: {git_repo} → {notes_repo}에 Issue 생성")
+        # 이슈는 항상 notes_repo에 생성, 프로젝트 컨텍스트는 설정에 따라 제목 prefix 또는 라벨로 사용
+        if add_context_label:
+            logger.info(
+                f"프로젝트 라벨 모드: {context_repo} → {notes_repo}에 Issue 생성"
+            )
         else:
-            logger.info(f"git remote 없음 → {notes_repo}에 Issue 생성")
+            logger.info(
+                f"프로젝트 prefix 모드: {context_repo} → {notes_repo}에 Issue 생성"
+            )
         item_id, issue_number = create_repo_issue_and_add_to_project(
-            notes_repo, title, body
+            notes_repo,
+            title,
+            body,
+            labels=[context_repo] if add_context_label else None,
         )
 
         set_item_status(item_id, "registered")
@@ -183,6 +193,7 @@ def main() -> int:
             "cwd": cwd,
             "repo": notes_repo,
             "issue_number": issue_number,
+            "context_repo": context_repo,
             "status": "registered",
             "created_at": datetime.now().isoformat(),
         })
