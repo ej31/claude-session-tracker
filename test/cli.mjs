@@ -181,7 +181,7 @@ if (args[0] === 'api' && args[1] === 'graphql') {
         ? [{
             id: 'PSU_REMOTE',
             body: '<!-- claude-session-tracker:project-status -->\\n**Tracker state:** paused',
-            status: boardStatus || 'OFF_TRACK',
+            status: boardStatus || 'INACTIVE',
             updatedAt: '2026-03-12T00:00:00Z',
           }]
         : []
@@ -243,6 +243,7 @@ function writeTrackerInstall({ home, hooksDir, workspace, notesRepo = 'tester/pr
     'cst_session_stop.py',
     'cst_mark_done.py',
     'cst_post_tool_use.py',
+    'cst_session_end.py',
   ]) {
     writeFileSync(join(hooksDir, file), '# stub\n')
   }
@@ -304,7 +305,7 @@ function testStatusOutput() {
     status: 'waiting',
     tracking_paused: true,
     project_status_sync: {
-      status: 'OFF_TRACK',
+      status: 'INACTIVE',
       success: false,
       error: 'simulated sync error',
     },
@@ -313,7 +314,7 @@ function testStatusOutput() {
   writeFileSync(join(env.hooksDir, 'project_status_update.json'), JSON.stringify({
     project_id: 'PVT_project',
     status_update_id: 'PSU_1',
-    last_status: 'OFF_TRACK',
+    last_status: 'INACTIVE',
     last_synced_at: '2026-03-12T00:00:00Z',
   }, null, 2))
 
@@ -365,7 +366,7 @@ function testPauseResumeLifecycle() {
   const pauseCache = JSON.parse(readFileSync(join(env.hooksDir, 'project_status_update.json'), 'utf-8'))
   const ghStateAfterPause = JSON.parse(readFileSync(env.ghStatePath, 'utf-8'))
   assertOk('pause sets tracking_paused', pausedState.tracking_paused === true)
-  assertOk('pause stores OFF_TRACK cache', pauseCache.last_status === 'OFF_TRACK')
+  assertOk('pause stores INACTIVE cache', pauseCache.last_status === 'INACTIVE')
   assertOk('pause writes one status update history entry', ghStateAfterPause.statusUpdates.length === 1)
   assertOk('pause history body includes session id', ghStateAfterPause.statusUpdates[0].body.includes('**Session ID:** session-2'))
   assertOk('pause history body includes workspace path', ghStateAfterPause.statusUpdates[0].body.includes(`**Workspace:** ${env.workspace}`))
@@ -448,14 +449,14 @@ function testSessionStartBlocksOffTrackBoard() {
       cwd: env.workspace,
       transcript_path: transcriptPath,
     }),
-    extraEnv: { GH_STUB_BOARD_STATUS: 'OFF_TRACK' },
+    extraEnv: { GH_STUB_BOARD_STATUS: 'INACTIVE' },
   })
 
   assert.equal(result.status, 0)
-  assertOk('session_start prints OFF_TRACK block', result.stdout.includes('project board is currently OFF_TRACK'))
-  assertOk('session_start skips state creation when board is OFF_TRACK', !existsSync(join(env.stateDir, 'session-off-track.json')))
+  assertOk('session_start prints INACTIVE block', result.stdout.includes('project board is currently INACTIVE'))
+  assertOk('session_start skips state creation when board is INACTIVE', !existsSync(join(env.stateDir, 'session-off-track.json')))
   const runtimeStatus = JSON.parse(readFileSync(join(env.hooksDir, 'runtime_status.json'), 'utf-8'))
-  assertOk('session_start records project_off_track reason', runtimeStatus.reason === 'project_off_track')
+  assertOk('session_start records project_inactive reason', runtimeStatus.reason === 'project_inactive')
 }
 
 function testPromptSkipsWhenBoardOffTrack() {
@@ -484,15 +485,15 @@ function testPromptSkipsWhenBoardOffTrack() {
       HOME: env.home,
       PATH: `${env.binDir}:${process.env.PATH}`,
       GH_STUB_STATE: env.ghStatePath,
-      GH_STUB_BOARD_STATUS: 'OFF_TRACK',
+      GH_STUB_BOARD_STATUS: 'INACTIVE',
     },
   })
 
   assert.equal(result.status, 0)
   const state = JSON.parse(readFileSync(statePath, 'utf-8'))
-  assertOk('prompt keeps prior status when board is OFF_TRACK', state.status === 'waiting')
+  assertOk('prompt keeps prior status when board is INACTIVE', state.status === 'waiting')
   const runtimeStatus = JSON.parse(readFileSync(join(env.hooksDir, 'runtime_status.json'), 'utf-8'))
-  assertOk('prompt records project_off_track runtime status', runtimeStatus.reason === 'project_off_track')
+  assertOk('prompt records project_inactive runtime status', runtimeStatus.reason === 'project_inactive')
 }
 
 console.log('\n[cli]')

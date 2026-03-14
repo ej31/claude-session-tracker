@@ -53,7 +53,7 @@ The installer creates **everything** for you automatically —
 - Claude Code hooks, globally installed
 - Auto setup recovery if repository/project creation fails mid-way
 - Marks the configured project board `ON_TRACK` when setup completes
-- Sets a project README warning that `ON_TRACK` / `OFF_TRACK` are managed by the CLI
+- Sets a project README warning that `ON_TRACK` / `INACTIVE` are managed by the CLI
 
 All you do is pick a language and confirm. That's it.
 
@@ -92,7 +92,7 @@ When you chat with Claude Code, the tracker automatically
 - Saves timestamps for everything
 - Auto-closes idle sessions (configurable)
 - Lets you inspect local install health with `status` and `doctor`
-- Lets you pause local tracking and mark the project board `OFF_TRACK`
+- Lets you pause local tracking and mark the project board `INACTIVE`
 
 No setup after install. Just use Claude Code like normal.
 
@@ -173,11 +173,11 @@ claude-session-tracker pause
 claude-session-tracker resume
 ```
 
-`pause` suspends prompt/response logging for the current workspace and marks the configured project board `OFF_TRACK`. `resume` marks it `ON_TRACK` and re-enables normal tracking from the next Claude hook event.
+`pause` suspends prompt/response logging for the current workspace and marks the configured project board `INACTIVE`. `resume` marks it `ON_TRACK` and re-enables normal tracking from the next Claude hook event.
 
 Every install, pause, and resume writes a new project status update entry so you keep a history of local on/off transitions. Each entry includes the session ID, workspace path, issue URL when available, timestamp, and local IP address.
 
-If someone marks the tracker card `OFF_TRACK` directly in the GitHub Projects web UI, the hooks will detect that state before writing any new session data and will skip logging until the board is returned to `ON_TRACK`.
+If someone marks the tracker card `INACTIVE` directly in the GitHub Projects web UI, the hooks will detect that state before writing any new session data and will skip logging until the board is returned to `ON_TRACK`.
 
 ---
 
