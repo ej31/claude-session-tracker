@@ -88,6 +88,7 @@ Every time you chat with Claude Code, the tracker kicks in —
 - Auto-closes idle sessions (default 30 min)
 - Health checks with `status` and `doctor` commands
 - Pause/resume tracking whenever you want
+- Auto-update notifications when a new version is available
 
 Install once, then just use Claude Code like normal. That's literally it.
 
@@ -169,6 +170,14 @@ Every state change gets recorded as a project status update — session ID, work
 
 If someone marks the card `INACTIVE` from the GitHub web UI, the hooks detect it and stop logging until it's switched back.
 
+**Auto-update**
+
+When a new version is published, the tracker shows a notification at the start of your next session. Update hook scripts in-place without re-running the full installer —
+
+```bash
+claude-session-tracker update
+```
+
 ---
 
 ## Use Cases
@@ -239,7 +248,8 @@ Files installed to `~/.claude/hooks/`
 ├── cst_session_start.py             # SessionStart hook
 ├── cst_prompt_to_github_projects.py # UserPromptSubmit hook
 ├── cst_post_tool_use.py             # PostToolUse hook
-├── cst_session_stop.py              # Stop / SessionEnd hook
+├── cst_session_stop.py              # Stop hook
+├── cst_session_end.py               # SessionEnd hook
 ├── cst_mark_done.py                 # Idle timeout handler
 ├── config.env                       # Your configuration
 ├── hooks.log                        # Execution logs
