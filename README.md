@@ -51,6 +51,9 @@ The installer creates **everything** for you automatically —
 - Custom date fields (`Session Created`, `Last Active`)
 - Project context shown as GitHub labels by default
 - Claude Code hooks, globally installed
+- Auto setup recovery if repository/project creation fails mid-way
+- Marks the configured project board `ON_TRACK` when setup completes
+- Sets a project README warning that `ON_TRACK` / `OFF_TRACK` are managed by the CLI
 
 All you do is pick a language and confirm. That's it.
 
@@ -88,6 +91,8 @@ When you chat with Claude Code, the tracker automatically
 - Auto-assigns issues to you
 - Saves timestamps for everything
 - Auto-closes idle sessions (configurable)
+- Lets you inspect local install health with `status` and `doctor`
+- Lets you pause local tracking and mark the project board `OFF_TRACK`
 
 No setup after install. Just use Claude Code like normal.
 
@@ -148,6 +153,32 @@ Has a GitHub remote? We use the current workspace repo as `owner/repo`. If not, 
 
 All hooks run async. Tracking never slows down Claude.
 
+**Built-in recovery and health checks**
+
+If setup fails halfway through, re-run the installer and it can resume or clean up the partial GitHub resources it created. After install, run:
+
+```bash
+claude-session-tracker status
+claude-session-tracker doctor
+```
+
+Use `status` for a fast local summary and `doctor` when you want a deeper GitHub-backed diagnosis.
+
+**Pause / resume tracking**
+
+Need to stop logging a sensitive stretch of work? Run:
+
+```bash
+claude-session-tracker pause
+claude-session-tracker resume
+```
+
+`pause` suspends prompt/response logging for the current workspace and marks the configured project board `OFF_TRACK`. `resume` marks it `ON_TRACK` and re-enables normal tracking from the next Claude hook event.
+
+Every install, pause, and resume writes a new project status update entry so you keep a history of local on/off transitions. Each entry includes the session ID, workspace path, issue URL when available, timestamp, and local IP address.
+
+If someone marks the tracker card `OFF_TRACK` directly in the GitHub Projects web UI, the hooks will detect that state before writing any new session data and will skip logging until the board is returned to `ON_TRACK`.
+
 ---
 
 ## Use Cases
@@ -183,6 +214,7 @@ Track everything Claude did, when it did it, and why. Useful for reviews and lea
   Needs `project` (read/write GitHub Projects) and `repo` (create issues, comments) scopes.
 
 - A GitHub Project (v2) with a Status field (auto setup creates one for you)
+- A **private** GitHub repository for session storage. Public repositories are rejected because sessions may contain secrets or personal data.
 
 ---
 
