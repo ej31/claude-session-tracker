@@ -662,7 +662,8 @@ def check_for_update(logger: logging.Logger) -> Optional[str]:
             with open(_UPDATE_CHECK_CACHE, encoding="utf-8") as f:
                 cache = json.load(f)
             last_check = cache.get("checked_at", 0)
-            if time.time() - last_check < _UPDATE_CHECK_INTERVAL_SECS:
+            now = time.time()
+            if 0 < last_check <= now and now - last_check < _UPDATE_CHECK_INTERVAL_SECS:
                 cached_latest = cache.get("latest_version", "")
                 if cached_latest and _parse_semver(cached_latest) > _parse_semver(current_version):
                     return cached_latest
@@ -676,21 +677,30 @@ def check_for_update(logger: logging.Logger) -> Optional[str]:
             _NPM_REGISTRY_URL,
             headers={"Accept": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=_NPM_REGISTRY_TIMEOUT_SECS) as resp:
+        import ssl
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=_NPM_REGISTRY_TIMEOUT_SECS, context=ctx) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         latest_version = data.get("version", "")
-    except (urllib.error.URLError, OSError, json.JSONDecodeError, Exception) as e:
+    except Exception as e:
         logger.debug(f"Update check failed (ignored): {e}")
         return None
 
-    # 캐시 저장
+    # 캐시 저장 (원자적 쓰기)
     try:
-        with open(_UPDATE_CHECK_CACHE, "w", encoding="utf-8") as f:
-            json.dump({
-                "latest_version": latest_version,
-                "current_version": current_version,
-                "checked_at": time.time(),
-            }, f)
+        import tempfile
+        cache_data = json.dumps({
+            "latest_version": latest_version,
+            "current_version": current_version,
+            "checked_at": time.time(),
+        })
+        fd, tmp_path = tempfile.mkstemp(dir=_UPDATE_CHECK_CACHE.parent)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(cache_data)
+            os.replace(tmp_path, _UPDATE_CHECK_CACHE)
+        except Exception:
+            os.unlink(tmp_path)
     except Exception:
         pass
 

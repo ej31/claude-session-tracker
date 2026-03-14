@@ -13,16 +13,17 @@ import {
   readdirSync,
   realpathSync,
   statSync,
+  lstatSync,
 } from 'node:fs'
-import { join, dirname, basename } from 'node:path'
+import { join, dirname, basename, resolve } from 'node:path'
 import { homedir, networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PKG_VERSION = (() => {
   try {
-    return readFileSync(join(__dirname, '..', 'package.json'), 'utf-8')
-      .match(/"version"\s*:\s*"([^"]+)"/)?.[1] ?? '0.0.0'
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'))
+    return pkg.version || '0.0.0'
   } catch {
     return '0.0.0'
   }
@@ -1273,30 +1274,22 @@ async function runUpdate() {
     process.exit(1)
   }
 
-  if (!latestVersion) {
-    spin.stop('Could not determine the latest version.')
+  if (!latestVersion || !/^\d+\.\d+\.\d+$/.test(latestVersion)) {
+    spin.stop('Could not determine a valid latest version.')
     process.exit(1)
   }
 
-  const parseSemver = (v) => {
-    const parts = (v || '').split('.').map(Number)
-    return parts.some(isNaN) ? null : parts
-  }
-  const current = parseSemver(currentVersion)
-  const latest = parseSemver(latestVersion)
-
-  if (!latest) {
-    spin.stop('Could not parse the latest version.')
-    process.exit(1)
+  const compareSemver = (a, b) => {
+    const pa = a.split('.').map(Number)
+    const pb = b.split('.').map(Number)
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0)
+    }
+    return 0
   }
 
   // 현재 버전을 알 수 없으면 (레거시 설치) 항상 업데이트 제안
-  const isNewer = !current || latest.some((n, i) => {
-    for (let j = 0; j < i; j++) {
-      if (latest[j] !== current[j]) return false
-    }
-    return n > (current[i] || 0)
-  })
+  const isNewer = !/^\d+\.\d+\.\d+$/.test(currentVersion) || compareSemver(latestVersion, currentVersion) > 0
 
   if (!isNewer) {
     spin.stop(`Already up to date (v${currentVersion}).`)
@@ -1318,7 +1311,16 @@ async function runUpdate() {
 
   // npm pack으로 최신 패키지를 임시 디렉토리에 다운로드
   const tmpDir = join(HOME, '.claude', 'hooks', '.update-tmp')
-  mkdirSync(tmpDir, { recursive: true })
+  try {
+    const stat = lstatSync(tmpDir)
+    if (stat.isSymbolicLink()) {
+      throw new Error('Symlink detected at update temp directory')
+    }
+    rmSync(tmpDir, { recursive: true, force: true })
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw e
+  }
+  mkdirSync(tmpDir, { recursive: true, mode: 0o700 })
 
   try {
     const packResult = spawnSync('npm', ['pack', `claude-session-tracker@${latestVersion}`, '--pack-destination', tmpDir], {
@@ -1330,10 +1332,13 @@ async function runUpdate() {
     }
 
     const tarball = packResult.stdout.trim().split('\n').pop()
-    if (!tarball || !tarball.endsWith('.tgz')) {
+    if (!tarball || !tarball.endsWith('.tgz') || tarball.includes('/') || tarball.includes('..')) {
       throw new Error(`Unexpected npm pack output: ${tarball}`)
     }
-    const tarPath = join(tmpDir, tarball)
+    const tarPath = resolve(join(tmpDir, tarball))
+    if (!tarPath.startsWith(resolve(tmpDir))) {
+      throw new Error('Path traversal detected in tarball filename')
+    }
 
     // tarball 풀기
     const extractDir = join(tmpDir, 'extracted')
@@ -1347,23 +1352,34 @@ async function runUpdate() {
     }
 
     const packageDir = join(extractDir, 'package')
+    if (!existsSync(join(packageDir, 'package.json'))) {
+      throw new Error('Unexpected package structure after extraction')
+    }
 
-    // hook 파일 업데이트
-    let updated = 0
+    // hook 파일을 스테이징 디렉토리에 먼저 복사 (원자적 업데이트)
+    const stagingDir = join(tmpDir, 'staging')
+    mkdirSync(stagingDir, { recursive: true })
+    const filesToUpdate = []
     for (const file of PY_FILES) {
       const src = join(packageDir, 'hooks', file)
       if (existsSync(src)) {
-        copyFileSync(src, join(HOOKS_DIR, file))
-        chmodSync(join(HOOKS_DIR, file), 0o755)
-        updated++
+        const stagingPath = join(stagingDir, file)
+        copyFileSync(src, stagingPath)
+        chmodSync(stagingPath, 0o755)
+        filesToUpdate.push(file)
       }
+    }
+
+    // 모든 파일이 준비되면 한꺼번에 이동
+    for (const file of filesToUpdate) {
+      copyFileSync(join(stagingDir, file), join(HOOKS_DIR, file))
     }
 
     // config.env의 CST_VERSION 업데이트
     if (existsSync(CONFIG_FILE)) {
       let configContent = readFileSync(CONFIG_FILE, 'utf-8')
       if (configContent.includes('CST_VERSION=')) {
-        configContent = configContent.replace(/CST_VERSION=.*/, `CST_VERSION=${latestVersion}`)
+        configContent = configContent.replace(/^CST_VERSION=.*/m, `CST_VERSION=${latestVersion}`)
       } else {
         configContent = configContent.trimEnd() + `\nCST_VERSION=${latestVersion}\n`
       }
@@ -1374,7 +1390,7 @@ async function runUpdate() {
     const updateCheckCache = join(HOOKS_DIR, 'update_check.json')
     removeFileIfExists(updateCheckCache)
 
-    updateSpin.stop(`Updated ${updated} hook files to v${latestVersion}.`)
+    updateSpin.stop(`Updated ${filesToUpdate.length} hook files to v${latestVersion}.`)
     p.log.success('Restart Claude Code to apply changes.')
   } catch (error) {
     updateSpin.stop('Update failed.')

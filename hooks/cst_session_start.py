@@ -58,8 +58,9 @@ def main() -> int:
 
     # 업데이트 알림 (24시간 캐싱, 실패 시 무시)
     try:
+        import re
         latest = check_for_update(logger)
-        if latest:
+        if latest and re.match(r"^\d+\.\d+\.\d+$", latest):
             current = os.environ.get("CST_VERSION", "unknown")
             print(
                 f"Update available: {current} → {latest}. "
