@@ -62,12 +62,6 @@ const STATUS_LABELS = {
 }
 const STATUS_COLORS = ['BLUE', 'GREEN', 'YELLOW', 'GRAY']
 const STATUS_DESCRIPTIONS = ['Session started', 'Claude is responding', 'Waiting for user input', 'Session ended']
-const STATUS_RECOMMENDATION_SYNONYMS = {
-  registered: ['registered', 'new', 'open', 'todo', 'to do', 'queued', 'backlog', 'planned', 'ready'],
-  responding: ['responding', 'in progress', 'in-progress', 'working', 'active', 'ongoing', 'doing'],
-  waiting: ['waiting', 'pending', 'needs input', 'blocked', 'review', 'on hold', 'hold'],
-  closed: ['closed', 'done', 'complete', 'completed', 'resolved', 'finished'],
-}
 const STATUS_ACTIONS = {
   install: {
     trackerState: 'installed',
@@ -385,69 +379,6 @@ function getInstallState(cwd = process.cwd()) {
   }
 }
 
-function normalizeStatusName(value) {
-  return value.toLowerCase().replace(/[^a-z0-9\u3131-\u318e\uac00-\ud7a3\u3040-\u30ff\u4e00-\u9fff]+/g, ' ').trim()
-}
-
-function buildStatusCandidates(lang) {
-  const candidates = {}
-  for (const [key, synonyms] of Object.entries(STATUS_RECOMMENDATION_SYNONYMS)) {
-    candidates[key] = new Set(synonyms.map(normalizeStatusName))
-    for (const localized of Object.values(STATUS_LABELS)) {
-      candidates[key].add(normalizeStatusName(localized[key]))
-    }
-    if (STATUS_LABELS[lang]?.[key]) {
-      candidates[key].add(normalizeStatusName(STATUS_LABELS[lang][key]))
-    }
-  }
-  return candidates
-}
-
-function scoreStatusOption(optionName, candidateNames) {
-  const normalizedOption = normalizeStatusName(optionName)
-  let bestScore = 0
-  for (const candidate of candidateNames) {
-    if (!candidate) continue
-    if (normalizedOption === candidate) return 300
-    if (normalizedOption.includes(candidate)) bestScore = Math.max(bestScore, 200 - (normalizedOption.length - candidate.length))
-    if (candidate.includes(normalizedOption)) bestScore = Math.max(bestScore, 120 - (candidate.length - normalizedOption.length))
-  }
-  return bestScore
-}
-
-function recommendStatusMapping(options, lang) {
-  const candidates = buildStatusCandidates(lang)
-  const map = {}
-  const unresolved = []
-  const usedIds = new Set()
-
-  for (const key of ['registered', 'responding', 'waiting', 'closed']) {
-    const ranked = options
-      .map(option => ({
-        option,
-        score: scoreStatusOption(option.name, candidates[key]),
-      }))
-      .filter(entry => entry.score > 0)
-      .sort((left, right) => right.score - left.score)
-
-    const winner = ranked.find(entry => !usedIds.has(entry.option.id))
-    if (!winner) {
-      unresolved.push(key)
-      continue
-    }
-
-    const nextDistinctScore = ranked.find(entry => entry.option.id !== winner.option.id && !usedIds.has(entry.option.id))?.score ?? 0
-    if (winner.score <= nextDistinctScore) {
-      unresolved.push(key)
-      continue
-    }
-
-    map[key] = winner.option.id
-    usedIds.add(winner.option.id)
-  }
-
-  return { map, unresolved }
-}
 
 function ghGraphql(query, variables = {}) {
   const result = spawnSync(
@@ -1254,67 +1185,6 @@ function runResume() {
   console.log('Local tracking resumed.')
 }
 
-function normalizeChoiceValue(result) {
-  return typeof result === 'string' ? result : result?.toString?.() ?? ''
-}
-
-async function chooseRecommendedMapping(statusField, lang) {
-  const choices = statusField.options.map(option => ({ value: option.id, label: option.name }))
-  const recommendation = recommendStatusMapping(statusField.options, lang)
-  const initialMap = { ...recommendation.map }
-
-  if (Object.keys(recommendation.map).length > 0) {
-    const lines = ['Recommended status mappings:']
-    for (const key of ['registered', 'responding', 'waiting', 'closed']) {
-      const optionId = recommendation.map[key]
-      if (!optionId) continue
-      const optionName = statusField.options.find(option => option.id === optionId)?.name ?? optionId
-      lines.push(`  ${key} -> ${optionName}`)
-    }
-    p.note(lines.join('\n'), 'Recommended mapping')
-    const useRecommended = await p.confirm({ message: 'Use the recommended mappings where available?' })
-    if (p.isCancel(useRecommended)) onCancel()
-    if (!useRecommended) {
-      recommendation.unresolved = ['registered', 'responding', 'waiting', 'closed']
-      for (const key of Object.keys(initialMap)) delete initialMap[key]
-    }
-  }
-
-  const mapping = { ...initialMap }
-  const used = new Set(Object.values(mapping))
-
-  for (const key of ['registered', 'responding', 'waiting', 'closed']) {
-    if (mapping[key]) continue
-    const available = choices.filter(choice => !used.has(choice.value))
-    const selected = await p.select({
-      message: `${key.padEnd(17)} ->`,
-      options: available.length > 0 ? available : choices,
-    })
-    if (p.isCancel(selected)) onCancel()
-    mapping[key] = normalizeChoiceValue(selected)
-    used.add(mapping[key])
-  }
-
-  return mapping
-}
-
-function validateNotesRepoPrivate(notesRepo) {
-  const spin = p.spinner()
-  spin.start(`Checking repository visibility for ${notesRepo}...`)
-  try {
-    const isPrivate = ghRepoIsPrivate(notesRepo)
-    if (!isPrivate) {
-      spin.stop('Repository visibility check failed')
-      p.log.error(`Tracking repositories must be private. ${notesRepo} is public.`)
-      process.exit(1)
-    }
-    spin.stop('Repository visibility confirmed (private)')
-  } catch (error) {
-    spin.stop('Repository visibility check failed')
-    p.log.error(error.message)
-    process.exit(1)
-  }
-}
 
 function cleanupAutoSetupArtifacts(recovery) {
   if (!recovery) return
@@ -1503,17 +1373,7 @@ async function autoSetup(username) {
       const hasAllRequiredFields = meta != null && META_REQUIRED_FIELDS.every(f => meta[f] != null)
 
       if (hasAllRequiredFields) {
-        p.note([
-          `An existing session storage (https://github.com/${repoFullName}) was found.`,
-          'The existing repository and GitHub Projects will be reused.',
-          '',
-          'If you do not want this, choose one of the following options.',
-          '  Option 1 - Proceed with Manual Setup instead.',
-          `  Option 2 - Rename or delete the existing GitHub Repository and GitHub Projects board.`,
-        ].join('\n'), 'Existing session storage detected')
-
-        const reuseConfirmed = await p.confirm({ message: 'Continue with the existing session storage?' })
-        if (p.isCancel(reuseConfirmed) || !reuseConfirmed) onCancel()
+        p.log.info(`Reusing existing session storage (https://github.com/${repoFullName})`)
 
         // meta.json 에서 프로젝트 정보를 읽어서 recovery 상태 복원
         recovery = {
@@ -1797,162 +1657,6 @@ async function autoSetup(username) {
   p.outro(`Run Claude Code and start a conversation — then check ${recovery.projectUrl}`)
 }
 
-// -- Manual Setup -------------------------------------------------------------
-
-async function manualSetup(username) {
-  const owner = await p.text({
-    message: 'GitHub Project Owner (username or org)',
-    initialValue: username,
-    validate: value => !value?.trim() ? 'This field is required.' : undefined,
-  })
-  if (p.isCancel(owner)) onCancel()
-  const ownerVal = owner.trim()
-
-  p.log.info(`If you don't have a project yet, no worries! Create one at: https://github.com/${ownerVal}?tab=projects`)
-
-  const number = await p.text({
-    message: 'Project number',
-    placeholder: '1',
-    validate: value => !value || Number.isNaN(Number(value)) ? 'Please enter a number.' : undefined,
-  })
-  if (p.isCancel(number)) onCancel()
-  const projectNumber = Number(number)
-
-  const fetchSpin = p.spinner()
-  fetchSpin.start('Fetching project metadata...')
-  let projectMeta
-  try {
-    projectMeta = fetchProjectMetadata(ownerVal, projectNumber)
-    fetchSpin.stop(`Found project: ${projectMeta.projectTitle}`)
-  } catch (error) {
-    fetchSpin.stop('Failed to fetch project')
-    p.log.error(error.message)
-    process.exit(1)
-  }
-
-  const statusOptions = projectMeta.statusField.options.map(option => option.name).join(', ')
-  p.note([
-    `  Name    : ${projectMeta.projectTitle}`,
-    `  URL     : ${projectMeta.projectUrl}`,
-    `  ID      : ${projectMeta.projectId}`,
-    `  Statuses: ${statusOptions}`,
-  ].join('\n'), 'Project details')
-
-  const rightProject = await p.confirm({ message: 'Is this the right project?' })
-  if (p.isCancel(rightProject) || !rightProject) onCancel()
-
-  const notesRepo = await p.text({
-    message: 'Repository for session issues (when no git remote is available)',
-    placeholder: `${ownerVal}/dev-notes`,
-    validate: value => !value?.includes('/') ? 'Please use owner/repo format.' : undefined,
-  })
-  if (p.isCancel(notesRepo)) onCancel()
-  const notesRepoValue = notesRepo.trim()
-  validateNotesRepoPrivate(notesRepoValue)
-
-  const contextRepoExample = getContextRepoExample(notesRepoValue)
-  const displayExamples = getProjectNameDisplayExamples(contextRepoExample)
-  p.note([
-    'Choose how the active project name should appear on each issue.',
-    `  Context source: Current workspace repo if available, otherwise ${notesRepoValue}`,
-    '',
-    '  Prefix in issue title',
-    `  Issue title: ${displayExamples.prefixTitle}`,
-    '  Labels     : claude-code',
-    '',
-    '  Label in GitHub Projects',
-    `  Issue title: ${displayExamples.labelTitle}`,
-    `  Labels     : claude-code, ${displayExamples.labelName}`,
-  ].join('\n'), 'Project name display')
-
-  const projectNameMode = await p.select({
-    message: 'How should the project name be shown?',
-    options: [
-      { value: 'prefix', label: 'Prefix in issue title', hint: 'Shows [owner/repo] before the latest prompt' },
-      { value: 'label', label: 'Label in GitHub Projects', hint: 'Keeps the title clean and stores owner/repo as a label' },
-    ],
-  })
-  if (p.isCancel(projectNameMode)) onCancel()
-
-  const timeout = await p.text({
-    message: 'Session close timer (minutes)',
-    initialValue: '30',
-    validate: value => !value || Number.isNaN(Number(value)) ? 'Please enter a number.' : undefined,
-  })
-  if (p.isCancel(timeout)) onCancel()
-
-  const scope = await p.select({
-    message: 'Hook scope',
-    options: [
-      { value: 'global', label: 'Global              (~/.claude/settings.json)' },
-      { value: 'project', label: 'Current project     (.claude/settings.json)' },
-    ],
-  })
-  if (p.isCancel(scope)) onCancel()
-
-  const langManual = await p.select({
-    message: 'Which language for issue comments?',
-    options: [
-      { value: 'en', label: 'English', hint: 'Prompt, Response' },
-      { value: 'ko', label: 'Korean', hint: '프롬프트, 답변' },
-      { value: 'ja', label: 'Japanese', hint: 'プロンプト, 回答' },
-      { value: 'zh', label: 'Chinese', hint: '提示词, 回答' },
-    ],
-  })
-  if (p.isCancel(langManual)) onCancel()
-
-  p.log.info('Using recommended mappings where possible. You can still adjust anything below.')
-  const statusMap = await chooseRecommendedMapping(projectMeta.statusField, normalizeChoiceValue(langManual))
-
-  const scopeLabel = scope === 'global' ? 'Global' : 'Current project'
-  p.note([
-    `  Project    : ${projectMeta.projectTitle} (#${projectNumber})`,
-    `  Notes Repo : ${notesRepoValue}`,
-    `  Display    : ${projectNameMode === 'prefix' ? 'Prefix in issue title' : 'Label in GitHub Projects'}`,
-    `  Timeout    : ${timeout} min`,
-    `  Scope      : ${scopeLabel}`,
-  ].join('\n'), 'Setup summary')
-
-  const confirmed = await p.confirm({ message: 'Ready to install?' })
-  if (p.isCancel(confirmed) || !confirmed) onCancel()
-
-  const installSpin = p.spinner()
-  installSpin.start('Installing hooks...')
-  try {
-    installHooksAndConfig({
-      owner: ownerVal,
-      projectNumber,
-      projectId: projectMeta.projectId,
-      statusFieldId: projectMeta.statusField.id,
-      statusMap,
-      notesRepo: notesRepoValue,
-      timeoutMinutes: Number(timeout),
-      scope: normalizeChoiceValue(scope),
-      lang: normalizeChoiceValue(langManual),
-      projectNameMode: normalizeChoiceValue(projectNameMode),
-    })
-    installSpin.stop('Hooks installed')
-  } catch (error) {
-    installSpin.stop('Failed to install hooks')
-    p.log.error(error.message)
-    process.exit(1)
-  }
-
-  ensureProjectReadmeAfterInstall(projectMeta.projectId)
-  ensureProjectOnTrackAfterInstall(projectMeta.projectId, process.cwd())
-
-  p.note([
-    'Everything is all set! Here\'s what to do next:',
-    '',
-    '  1. Start Claude Code and have any conversation',
-    `  2. Check your project board at: ${projectMeta.projectUrl}`,
-    '',
-    '  Session issues are stored in:',
-    `     https://github.com/${notesRepoValue}`,
-  ].join('\n'), 'You\'re ready to go!')
-
-  p.outro(`Run Claude Code and start a conversation — then check ${projectMeta.projectUrl}`)
-}
 
 // -- Main ---------------------------------------------------------------------
 
@@ -2050,20 +1754,7 @@ async function runSetup() {
     }
   }
 
-  const mode = await p.select({
-    message: 'How would you like to set up?',
-    options: [
-      { value: 'auto', label: 'Auto setup (recommended)', hint: 'Creates a private repo and project for you' },
-      { value: 'manual', label: 'Manual setup', hint: 'Use your own existing project' },
-    ],
-  })
-  if (p.isCancel(mode)) onCancel()
-
-  if (mode === 'auto') {
-    await autoSetup(username)
-  } else {
-    await manualSetup(username)
-  }
+  await autoSetup(username)
 
   await askForStar()
 }
