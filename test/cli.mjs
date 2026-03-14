@@ -127,7 +127,12 @@ if (args[0] === 'api' && args[1] === 'graphql') {
   }
 
   if (query.includes('updateProjectV2(input:')) {
-    state.projectReadme = payload.variables.readme
+    if (payload.variables.readme !== undefined) {
+      state.projectReadme = payload.variables.readme
+    }
+    if (payload.variables.shortDescription !== undefined) {
+      state.projectDescription = payload.variables.shortDescription
+    }
     writeState(state)
     respond(JSON.stringify({
       data: {
@@ -135,6 +140,7 @@ if (args[0] === 'api' && args[1] === 'graphql') {
           projectV2: {
             id: payload.variables.projectId,
             readme: payload.variables.readme,
+            shortDescription: payload.variables.shortDescription,
           },
         },
       },
@@ -442,9 +448,13 @@ function testInstallHelperConfiguresReadmeAndOnTrack() {
   })
   unlinkSync(tempModule)
 
+  if (result.status !== 0) {
+    console.error('  [DEBUG] install helper stderr:', result.stderr)
+    console.error('  [DEBUG] install helper stdout:', result.stdout)
+  }
   assert.equal(result.status, 0)
   const ghState = JSON.parse(readFileSync(env.ghStatePath, 'utf-8'))
-  assertOk('install helper writes project readme', ghState.projectReadme.includes('do not manually change'))
+  assertOk('install helper writes project readme', ghState.projectReadme?.includes('Claude Session Tracker'))
   assertOk('install helper creates ON_TRACK entry', ghState.statusUpdates.length === 1 && ghState.statusUpdates[0].status === 'ON_TRACK')
 }
 
