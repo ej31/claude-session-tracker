@@ -242,11 +242,11 @@ def get_tracker_project_status_update() -> Optional[dict]:
     return None
 
 
-def is_tracker_board_off_track() -> bool:
+def is_tracker_board_inactive() -> bool:
     status_update = get_tracker_project_status_update()
     if not status_update:
         return False
-    return status_update.get("status") == "OFF_TRACK"
+    return status_update.get("status") == "INACTIVE"
 
 
 # ─── 상태 파일 ───────────────────────────────────────────────────────────────
@@ -340,6 +340,20 @@ def update_issue_title(repo: str, issue_number: int, title: str) -> None:
     if result.returncode != 0:
         raise RuntimeError(f"제목 업데이트 실패: {result.stderr.strip()}")
     _log.debug(f"제목 업데이트 완료: {repo}#{issue_number} → {title}")
+
+
+def close_issue(repo: str, issue_number: int) -> None:
+    """GitHub Issue를 close 처리"""
+    _log = setup_logger("close-issue")
+    result = subprocess.run(
+        ["gh", "issue", "close", str(issue_number), "--repo", repo],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Issue close 실패: {result.stderr.strip()}")
+    _log.info(f"Issue close 완료: {repo}#{issue_number}")
 
 
 def add_issue_comment(repo: str, issue_number: int, body: str) -> None:
@@ -532,6 +546,67 @@ def is_resume(transcript_path: str) -> bool:
         return first.get("type") == "file-history-snapshot"
     except Exception:
         return False
+
+
+def cleanup_stale_sessions(logger: logging.Logger) -> int:
+    """오래된 non-closed 세션을 자동 정리 (컴퓨터 비정상 종료 등 대비)
+    DONE_TIMEOUT_SECS 이상 파일 수정이 없는 세션을 close 처리
+    반환값: 정리된 세션 수
+    """
+    if not STATE_DIR.exists():
+        return 0
+
+    timeout_secs = _done_timeout()
+    now = __import__("time").time()
+    cleaned = 0
+
+    for file in STATE_DIR.glob("*.json"):
+        try:
+            # 파일 수정 시각 기준으로 stale 여부 판단
+            age_secs = now - file.stat().st_mtime
+            if age_secs < timeout_secs:
+                continue
+
+            with open(file, encoding="utf-8") as fp:
+                state = json.load(fp)
+
+            if state.get("status") == "closed":
+                continue
+
+            session_id = file.stem
+            item_id = state.get("item_id")
+            repo = state.get("repo")
+            issue_number = state.get("issue_number")
+
+            # 타이머 프로세스가 남아있으면 정리
+            cancel_timer(state)
+            state.pop("timer_pid", None)
+
+            # GitHub Projects status를 closed로 변경
+            if item_id:
+                try:
+                    set_item_status(item_id, "closed")
+                except Exception as e:
+                    logger.error(f"stale 세션 status 변경 실패: {session_id[:8]}… {e}")
+
+            # GitHub Issue close
+            if repo and issue_number:
+                try:
+                    close_issue(repo, issue_number)
+                except Exception as e:
+                    logger.error(f"stale 세션 issue close 실패: {session_id[:8]}… {e}")
+
+            state["status"] = "closed"
+            _write_json(file, state)
+            cleaned += 1
+            logger.info(
+                f"stale 세션 정리 완료: {session_id[:8]}… "
+                f"(방치 {int(age_secs // 60)}분)"
+            )
+        except Exception as e:
+            logger.error(f"stale 세션 정리 중 오류: {file.name} {e}")
+
+    return cleaned
 
 
 def find_active_state_by_cwd(cwd: str) -> Optional[Tuple[dict, str]]:
