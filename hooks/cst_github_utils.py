@@ -5,11 +5,58 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
+import shutil
 import signal
 import subprocess
 import sys
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
+
+
+# ─── PATH 보정 (제한된 실행 환경에서 gh CLI를 찾기 위함) ─────────────────────
+def _ensure_tool_paths() -> None:
+    """플랫폼별 일반적인 CLI 설치 경로를 PATH에 추가한다.
+    이미 PATH에 있는 경로는 건너뛴다.
+    """
+    system = platform.system()
+    home = Path.home()
+    current_path = os.environ.get("PATH", "")
+    path_dirs = set(current_path.split(os.pathsep))
+
+    candidates: list[str] = []
+
+    if system == "Darwin":
+        candidates = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            str(home / ".local" / "bin"),
+        ]
+    elif system == "Linux":
+        candidates = [
+            "/usr/local/bin",
+            "/snap/bin",
+            str(home / ".local" / "bin"),
+            "/home/linuxbrew/.linuxbrew/bin",
+        ]
+    elif system == "Windows":
+        candidates = [
+            str(Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "GitHub CLI"),
+            str(Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "GitHub CLI"),
+            str(home / "scoop" / "shims"),
+            str(home / "AppData" / "Local" / "GitHub CLI"),
+        ]
+
+    dirs_to_add = [d for d in candidates if d and d not in path_dirs and os.path.isdir(d)]
+    if dirs_to_add:
+        os.environ["PATH"] = os.pathsep.join(dirs_to_add) + os.pathsep + current_path
+
+
+_ensure_tool_paths()
+
+# gh CLI 경로 확인 (모듈 로드 시 1회)
+_GH_PATH = shutil.which("gh")
+
 
 LOG_FILE = Path("~/.claude/hooks/hooks.log").expanduser()
 _CONFIG_ENV = Path("~/.claude/hooks/config.env").expanduser()
@@ -177,13 +224,23 @@ def clear_runtime_status() -> None:
 
 # ─── GraphQL / gh 헬퍼 ───────────────────────────────────────────────────────
 
+def _gh() -> str:
+    """gh CLI 실행 경로 반환. 찾을 수 없으면 RuntimeError"""
+    if _GH_PATH is None:
+        raise RuntimeError(
+            "gh CLI를 찾을 수 없습니다. "
+            "GitHub CLI를 설치해주세요 (https://cli.github.com)"
+        )
+    return _GH_PATH
+
+
 def graphql_request(query: str, variables: dict) -> dict:
     """gh CLI를 통해 GitHub GraphQL API 요청"""
     _log = setup_logger("graphql")
     payload = json.dumps({"query": query, "variables": variables})
     _log.debug(f"GraphQL 요청: vars={list(variables.keys())}")
     result = subprocess.run(
-        ["gh", "api", "graphql", "--input", "-"],
+        [_gh(), "api", "graphql", "--input", "-"],
         input=payload,
         capture_output=True,
         text=True,
@@ -200,7 +257,7 @@ def graphql_request(query: str, variables: dict) -> dict:
 
 def is_repo_private(repo: str) -> bool:
     result = subprocess.run(
-        ["gh", "api", f"repos/{repo}", "--jq", ".private"],
+        [_gh(), "api", f"repos/{repo}", "--jq", ".private"],
         capture_output=True,
         text=True,
         timeout=10,
@@ -346,7 +403,7 @@ def close_issue(repo: str, issue_number: int) -> None:
     """GitHub Issue를 close 처리"""
     _log = setup_logger("close-issue")
     result = subprocess.run(
-        ["gh", "issue", "close", str(issue_number), "--repo", repo],
+        [_gh(), "issue", "close", str(issue_number), "--repo", repo],
         capture_output=True,
         text=True,
         timeout=15,
@@ -359,7 +416,7 @@ def close_issue(repo: str, issue_number: int) -> None:
 def add_issue_comment(repo: str, issue_number: int, body: str) -> None:
     _log = setup_logger("issue-comment")
     result = subprocess.run(
-        ["gh", "issue", "comment", str(issue_number), "--repo", repo, "--body", body],
+        [_gh(), "issue", "comment", str(issue_number), "--repo", repo, "--body", body],
         capture_output=True,
         text=True,
         timeout=15,
@@ -380,7 +437,7 @@ def create_repo_issue_and_add_to_project(
             issue_labels.append(label)
 
     me = subprocess.run(
-        ["gh", "api", "user", "--jq", ".login"],
+        [_gh(), "api", "user", "--jq", ".login"],
         capture_output=True,
         text=True,
         timeout=10,
@@ -463,7 +520,7 @@ def get_git_repo(cwd: str) -> Optional[str]:
 
 def ensure_label(repo: str, label: str) -> None:
     result = subprocess.run(
-        ["gh", "label", "list", "--repo", repo, "--search", label, "--json", "name"],
+        [_gh(), "label", "list", "--repo", repo, "--search", label, "--json", "name"],
         capture_output=True,
         text=True,
         timeout=10,
@@ -495,7 +552,7 @@ def add_issue_label(repo: str, issue_number: int, label: str) -> None:
     """이슈에 label 추가"""
     ensure_label(repo, label)
     result = subprocess.run(
-        ["gh", "issue", "edit", str(issue_number), "--repo", repo, "--add-label", label],
+        [_gh(), "issue", "edit", str(issue_number), "--repo", repo, "--add-label", label],
         capture_output=True,
         text=True,
         timeout=15,
