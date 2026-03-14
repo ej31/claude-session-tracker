@@ -80,8 +80,8 @@ Every time you chat with Claude Code, the tracker kicks in —
 
 - Creates a GitHub Issue for the session
 - Logs every prompt and every response
-- Updates the issue title with your latest prompt (so you can scan history fast)
-- Stores the active project as an issue label (e.g. `ej31/my-app`)
+- Issue title always reflects your most recent prompt — easy to scan at a glance
+- Records which repository you were working in as a GitHub label (e.g. `ej31/my-app`)
 - Tracks status — Registered, Responding, Waiting, Closed
 - Auto-assigns issues to you
 - Timestamps everything
@@ -126,11 +126,14 @@ This session is being tracked at https://github.com/you/repo/issues/42
 
 **Smart title updates**
 
-Issue title auto-updates with your latest prompt —
+Every time you send a prompt, the issue title is replaced with that prompt text. The title always shows what you last asked, so scanning your issue list tells you exactly where each session left off.
 ```
 Fix session resume bug
 ```
-The project name shows up as a label (like `ej31/claude-session-tracker`), keeping the title clean.
+
+**Repository label**
+
+The tracker detects the Git remote of your current workspace and attaches it as a GitHub label (e.g. `ej31/claude-session-tracker`). This keeps the issue title clean while still letting you filter sessions by repository on the Projects board.
 
 **Resume without duplicates**
 
