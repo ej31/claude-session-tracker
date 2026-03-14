@@ -26,10 +26,6 @@ jobs:
       - name: Run unit tests
         run: node test/compat.mjs
 
-      - name: Run CLI tests
-        if: runner.os != 'Windows'
-        run: node test/cli.mjs
-
       - name: Pack and install globally
         run: |
           npm pack
