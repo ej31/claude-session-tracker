@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import * as p from '@clack/prompts'
 import { spawnSync, spawn } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
 import {
   mkdirSync,
   writeFileSync,
@@ -426,6 +425,70 @@ function ghRepoIsPrivate(repo) {
   if (value === 'true') return true
   if (value === 'false') return false
   throw new Error(`Unexpected repo visibility response for ${repo}: ${value}`)
+}
+
+const SESSION_STORAGE_REPO_NAME = 'claude-session-storage'
+const META_JSON_PATH = '.claude-session-tracker/meta.json'
+
+function sessionStorageRepoExists(username) {
+  const result = spawnSync('gh', ['api', `repos/${username}/${SESSION_STORAGE_REPO_NAME}`, '--jq', '.full_name'], { encoding: 'utf-8' })
+  return result.status === 0 && result.stdout?.trim() === `${username}/${SESSION_STORAGE_REPO_NAME}`
+}
+
+function fetchMetaJsonFromRepo(repoFullName) {
+  const result = spawnSync(
+    'gh',
+    ['api', `repos/${repoFullName}/contents/${META_JSON_PATH}`, '--jq', '.content'],
+    { encoding: 'utf-8' },
+  )
+  if (result.status !== 0 || !result.stdout?.trim()) return null
+  try {
+    const decoded = Buffer.from(result.stdout.trim(), 'base64').toString('utf-8')
+    return JSON.parse(decoded)
+  } catch {
+    return null
+  }
+}
+
+function pushFileToRepo(repoFullName, filePath, content, message) {
+  const encoded = Buffer.from(content).toString('base64')
+  const existingResult = spawnSync(
+    'gh',
+    ['api', `repos/${repoFullName}/contents/${filePath}`, '--jq', '.sha'],
+    { encoding: 'utf-8' },
+  )
+  const body = { message, content: encoded }
+  if (existingResult.status === 0 && existingResult.stdout?.trim()) {
+    body.sha = existingResult.stdout.trim()
+  }
+  const result = spawnSync(
+    'gh',
+    ['api', `repos/${repoFullName}/contents/${filePath}`, '--method', 'PUT', '--input', '-'],
+    { input: JSON.stringify(body), encoding: 'utf-8' },
+  )
+  if (result.status !== 0) {
+    throw new Error(result.stderr?.trim() || `Failed to push ${filePath} to ${repoFullName}`)
+  }
+  return JSON.parse(result.stdout)
+}
+
+function buildRepoReadme() {
+  return [
+    '# Claude Session Storage',
+    '',
+    '> [!CAUTION]',
+    '> This repository has a GitHub Projects board where all Claude Code sessions are stored.',
+    '> This GitHub Repository and GitHub Projects installed by claude-session-tracker **MUST remain Private**.',
+    '> Claude Code sessions may contain highly sensitive Secrets, Keys, and Tokens.',
+    '',
+    'This repository is auto-created by [`claude-session-tracker`](https://github.com/ej31/claude-session-tracker) for tracking Claude Code sessions via GitHub Projects.',
+    '',
+    '## How it works',
+    '',
+    '- Each Claude Code session is recorded as an issue in this repository.',
+    '- Session status (registered, responding, waiting, closed) is tracked in the linked GitHub Projects board.',
+    '- The `.claude-session-tracker/meta.json` file stores the GitHub Projects ID for consistent access across installations.',
+  ].join('\n')
 }
 
 function hasRequiredScopes() {
@@ -1366,17 +1429,71 @@ async function autoSetup(username) {
     if (p.isCancel(lang)) onCancel()
   }
 
+  const repoFullName = `${username}/${SESSION_STORAGE_REPO_NAME}`
+  const projectTitle = `${username}'s Claude Session Storage`
+
   if (!recovery) {
-    const repoName = `claude-session-storage-${randomBytes(3).toString('hex')}`
-    recovery = {
-      owner: username,
-      lang,
-      repoFullName: `${username}/${repoName}`,
-      projectTitle: 'Claude Session Tracker',
-      completedSteps: [],
-      updatedAt: new Date().toISOString(),
+    // 기존 세션 저장소 리포지토리 존재 여부 확인
+    const checkSpin = p.spinner()
+    checkSpin.start('Checking for existing session storage...')
+    const repoExists = sessionStorageRepoExists(username)
+
+    if (repoExists) {
+      checkSpin.stop('Existing session storage found')
+      const meta = fetchMetaJsonFromRepo(repoFullName)
+
+      if (meta?.projectId) {
+        p.note([
+          `An existing session storage (https://github.com/${repoFullName}) was found.`,
+          'The existing repository and GitHub Projects will be reused.',
+          '',
+          'If you do not want this, choose one of the following options.',
+          '  Option 1 - Proceed with Manual Setup instead.',
+          `  Option 2 - Rename or delete the existing GitHub Repository and GitHub Projects board.`,
+        ].join('\n'), 'Existing session storage detected')
+
+        // meta.json 에서 프로젝트 정보를 읽어서 recovery 상태 복원
+        recovery = {
+          owner: username,
+          lang,
+          repoFullName,
+          projectTitle,
+          projectNumber: meta.projectNumber,
+          projectId: meta.projectId,
+          projectUrl: meta.projectUrl,
+          statusFieldId: meta.statusFieldId,
+          statusMap: meta.statusMap,
+          createdFieldId: meta.createdFieldId,
+          lastActiveFieldId: meta.lastActiveFieldId,
+          completedSteps: ['repo_created', 'project_created', 'status_configured', 'date_fields_attempted'],
+          updatedAt: new Date().toISOString(),
+        }
+        saveAutoSetupRecovery(recovery)
+      } else {
+        checkSpin.stop('Existing repository found (no metadata)')
+        // 리포지토리는 있지만 meta.json 이 없는 경우 - 새 프로젝트 생성 필요
+        recovery = {
+          owner: username,
+          lang,
+          repoFullName,
+          projectTitle,
+          completedSteps: ['repo_created'],
+          updatedAt: new Date().toISOString(),
+        }
+        saveAutoSetupRecovery(recovery)
+      }
+    } else {
+      checkSpin.stop('No existing session storage found')
+      recovery = {
+        owner: username,
+        lang,
+        repoFullName,
+        projectTitle,
+        completedSteps: [],
+        updatedAt: new Date().toISOString(),
+      }
+      saveAutoSetupRecovery(recovery)
     }
-    saveAutoSetupRecovery(recovery)
   }
 
   const labels = STATUS_LABELS[lang]
@@ -1413,6 +1530,17 @@ async function autoSetup(username) {
       p.log.error(error.message)
       process.exit(1)
     }
+
+    // 새 리포지토리에 README.md 푸시
+    const readmeSpin = p.spinner()
+    readmeSpin.start('Pushing README.md to repository...')
+    try {
+      pushFileToRepo(recovery.repoFullName, 'README.md', buildRepoReadme(), 'docs: add session storage README with security warning')
+      readmeSpin.stop('README.md pushed')
+    } catch (error) {
+      readmeSpin.stop('Could not push README.md (non-critical)')
+      p.log.warn(`README push failed: ${error.message}`)
+    }
   }
 
   if (!hasRecoveryStep(recovery, 'project_created')) {
@@ -1433,23 +1561,25 @@ async function autoSetup(username) {
     }
   }
 
-  const fetchSpin = p.spinner()
-  fetchSpin.start('Fetching project metadata...')
-  let projectMeta
-  try {
-    projectMeta = fetchProjectMetadata(username, recovery.projectNumber)
-    fetchSpin.stop('Project metadata fetched')
-    recovery = {
-      ...recovery,
-      projectId: projectMeta.projectId,
-      projectUrl: projectMeta.projectUrl,
-      statusFieldId: projectMeta.statusField.id,
+  if (!recovery.projectId) {
+    const fetchSpin = p.spinner()
+    fetchSpin.start('Fetching project metadata...')
+    let projectMeta
+    try {
+      projectMeta = fetchProjectMetadata(username, recovery.projectNumber)
+      fetchSpin.stop('Project metadata fetched')
+      recovery = {
+        ...recovery,
+        projectId: projectMeta.projectId,
+        projectUrl: projectMeta.projectUrl,
+        statusFieldId: projectMeta.statusField.id,
+      }
+      saveAutoSetupRecovery(recovery)
+    } catch (error) {
+      fetchSpin.stop('Failed to fetch project metadata')
+      p.log.error(error.message)
+      process.exit(1)
     }
-    saveAutoSetupRecovery(recovery)
-  } catch (error) {
-    fetchSpin.stop('Failed to fetch project metadata')
-    p.log.error(error.message)
-    process.exit(1)
   }
 
   if (!hasRecoveryStep(recovery, 'status_configured')) {
@@ -1475,7 +1605,7 @@ async function autoSetup(username) {
             }
           }
         }`
-      const response = ghGraphql(mutation, { fieldId: projectMeta.statusField.id, options })
+      const response = ghGraphql(mutation, { fieldId: recovery.statusFieldId, options })
       const updatedOptions = response.data?.updateProjectV2Field?.projectV2Field?.options
       if (!updatedOptions) throw new Error('Failed to configure status options.')
       const statusMap = {}
@@ -1550,6 +1680,27 @@ async function autoSetup(username) {
       p.log.error(error.message)
       process.exit(1)
     }
+  }
+
+  // meta.json 을 리포지토리에 푸시하여 어디서든 동일한 프로젝트를 바라보도록 함
+  const metaSpin = p.spinner()
+  metaSpin.start('Saving project metadata to repository...')
+  try {
+    const metaContent = JSON.stringify({
+      projectId: recovery.projectId,
+      projectNumber: recovery.projectNumber,
+      projectUrl: recovery.projectUrl,
+      statusFieldId: recovery.statusFieldId,
+      statusMap: recovery.statusMap,
+      createdFieldId: recovery.createdFieldId ?? null,
+      lastActiveFieldId: recovery.lastActiveFieldId ?? null,
+      updatedAt: new Date().toISOString(),
+    }, null, 2)
+    pushFileToRepo(recovery.repoFullName, META_JSON_PATH, metaContent, 'chore: update session tracker metadata')
+    metaSpin.stop('Project metadata saved to repository')
+  } catch (error) {
+    metaSpin.stop('Could not save project metadata (non-critical)')
+    p.log.warn(`Metadata push failed: ${error.message}`)
   }
 
   ensureProjectReadmeAfterInstall(recovery.projectId)
