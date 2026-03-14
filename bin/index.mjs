@@ -761,14 +761,29 @@ function getProjectStatus(projectId) {
   return { closed: node.closed === true, public: node.public === true }
 }
 
-function deleteProjectV2(projectId) {
+function closeProjectV2(projectId) {
   const mutation = `
     mutation($projectId: ID!) {
-      deleteProjectV2(input: { projectId: $projectId }) {
+      updateProjectV2(input: { projectId: $projectId, closed: true }) {
         projectV2 { id }
       }
     }`
   ghGraphql(mutation, { projectId })
+}
+
+function archiveRepo(repoFullName) {
+  // 먼저 private으로 전환한 뒤 archive 처리한다.
+  // archived 상태에서는 visibility 변경이 불가하므로 순서가 중요하다.
+  try {
+    ghCommand(['repo', 'edit', repoFullName, '--visibility', 'private'])
+  } catch {
+    // plan 제한 등으로 실패할 수 있다.
+    // private 전환 실패 시 public 상태로 archive하면 세션 데이터가 노출되므로 재검증한다.
+    if (!ghRepoIsPrivate(repoFullName)) {
+      throw new Error(`Cannot make ${repoFullName} private before archiving. Session data may be publicly visible.`)
+    }
+  }
+  ghCommand(['repo', 'archive', repoFullName, '--yes'])
 }
 
 function mergeHooks(existing, hooksDir) {
@@ -1437,8 +1452,27 @@ async function runUpdate() {
 
 function cleanupAutoSetupArtifacts(recovery) {
   if (!recovery) return
-  // 기존 프로젝트/저장소는 삭제하지 않고 recovery 파일만 정리한다.
-  // 세션 데이터가 포함된 리소스는 사용자가 직접 관리해야 한다.
+
+  // 생성된 프로젝트가 있으면 close 처리한다.
+  if (recovery.projectId || recovery.projectNumber) {
+    try {
+      const projectId = recovery.projectId
+        ?? fetchProjectMetadata(recovery.owner, Number(recovery.projectNumber)).projectId
+      closeProjectV2(projectId)
+    } catch (e) {
+      p.log.warn(`Failed to close project during cleanup: ${e.message ?? e}`)
+    }
+  }
+
+  // 생성된 리포지토리가 있으면 private 전환 후 archive 처리한다.
+  if (recovery.repoFullName) {
+    try {
+      archiveRepo(recovery.repoFullName)
+    } catch (e) {
+      p.log.warn(`Failed to archive repository during cleanup: ${e.message ?? e}`)
+    }
+  }
+
   clearAutoSetupRecovery()
 }
 
@@ -1595,9 +1629,15 @@ async function autoSetup(username) {
 
       // 기존 리포지토리가 private 인지 검증
       if (!ghRepoIsPrivate(repoFullName)) {
-        const newRepoFullName = findAvailableRepoName(username)
         p.log.warn(`Repository ${repoFullName} is no longer private.`)
         p.log.warn('Session data must always be stored in a private repository to protect sensitive information.')
+        try {
+          archiveRepo(repoFullName)
+          p.log.info(`Existing repository has been made private and archived.`)
+        } catch (e) {
+          p.log.warn(`Failed to archive existing repository: ${e.message ?? e}`)
+        }
+        const newRepoFullName = findAvailableRepoName(username)
         p.log.warn(`A new private repository will be created: ${newRepoFullName}`)
         recovery = {
           owner: username,
@@ -1626,6 +1666,12 @@ async function autoSetup(username) {
           } else {
             p.log.warn(`Existing project #${meta.projectNumber} is no longer private.`)
             p.log.warn('Session data must always be stored in a private project to protect sensitive information.')
+            try {
+              closeProjectV2(meta.projectId)
+              p.log.info(`Existing project #${meta.projectNumber} has been closed.`)
+            } catch (e) {
+              p.log.warn(`Failed to close existing project: ${e.message ?? e}`)
+            }
             p.log.warn('A new private project will be created.')
           }
           recovery = {

@@ -46,6 +46,7 @@ Everything is automatic. You just pick a language and hit enter.
 - Tags each issue with the project name as a label
 - Installs Claude Code hooks globally
 - Recovers gracefully if something fails mid-setup
+- Protects session data if repository or project visibility changes (see [Privacy Protection](#privacy-protection))
 - Marks the project board `ON_TRACK` on completion
 
 Already installed? Re-running the installer just reuses your existing setup. No duplicates, no mess.
@@ -168,6 +169,17 @@ Every state change gets recorded as a project status update — session ID, work
 
 If someone marks the card `INACTIVE` from the GitHub web UI, the hooks detect it and stop logging until it's switched back.
 
+**Privacy protection**
+
+Session data may contain sensitive information — API keys, file paths, internal logic. The tracker enforces private storage at every step.
+
+If the repository or project board visibility is changed to public, the installer detects this on re-run and takes automatic action.
+
+- Repository made public → switched back to private and archived, then a new private repository is created
+- Project board made public → closed, then a new private project is created
+
+The original data is never deleted. Archived repositories become read-only and closed projects stop receiving updates until explicitly reopened.
+
 **Auto-update**
 
 When a new version is published, the tracker shows a notification at the start of your next session. Update hook scripts in-place without re-running the full installer —
@@ -276,7 +288,7 @@ Now the whole team can see session activity across all projects in one board.
 npx claude-session-tracker uninstall
 ```
 
-Removes everything — hooks, config, state files, logs. Doesn't touch your other hooks.
+Removes hooks, config, state files, and logs. Your GitHub repository and project board are not deleted — the repository is archived and the project is closed so your session history is preserved. Doesn't touch your other hooks.
 
 ---
 
