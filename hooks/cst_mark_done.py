@@ -15,8 +15,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from cst_github_utils import (
     _done_timeout,
     clear_runtime_status,
+    close_issue,
     get_tracker_project_status_update,
-    is_tracker_board_off_track,
+    is_tracker_board_inactive,
     is_tracking_paused,
     load_env_file,
     load_state,
@@ -62,18 +63,18 @@ def main() -> int:
         return 0
 
     try:
-        if is_tracker_board_off_track():
+        if is_tracker_board_inactive():
             status_update = get_tracker_project_status_update() or {}
             save_runtime_status({
                 "status": "blocked",
-                "reason": "project_off_track",
+                "reason": "project_inactive",
                 "cwd": state.get("cwd", ""),
                 "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "status_update_id": status_update.get("id"),
             })
             state.pop("timer_pid", None)
             save_state(session_id, state)
-            logger.info(f"project board OFF_TRACK → 자동 종료 생략: {session_id[:8]}…")
+            logger.info(f"project board INACTIVE → 자동 종료 생략: {session_id[:8]}…")
             return 0
         clear_runtime_status()
     except Exception as e:
@@ -87,6 +88,16 @@ def main() -> int:
         logger.info(f"세션 종료 처리 완료: item={item_id} session={session_id[:8]}…")
     except Exception as e:
         logger.error(f"세션 종료 처리 실패: {e}")
+
+    # GitHub Issue close
+    repo = state.get("repo")
+    issue_number = state.get("issue_number")
+    if repo and issue_number:
+        try:
+            close_issue(repo, issue_number)
+            logger.info(f"Issue close 완료: {repo}#{issue_number}")
+        except Exception as e:
+            logger.error(f"Issue close 실패: {e}")
 
     return 0
 

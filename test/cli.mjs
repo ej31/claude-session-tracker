@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -51,6 +51,10 @@ if (args[0] === 'api' && args[1] === 'user') {
 }
 
 if (args[0] === 'api' && args[1] && args[1].startsWith('repos/')) {
+  if (args.includes('POST') && args[1].endsWith('/issues')) {
+    respond('"I_node123"\\n42\\n')
+    process.exit(0)
+  }
   respond((process.env.GH_STUB_REPO_PRIVATE ?? 'true') + '\\n')
   process.exit(0)
 }
@@ -65,6 +69,27 @@ if (args[0] === 'project' && args[1] === 'list') {
 }
 
 if (args[0] === 'repo' && args[1] === 'delete') {
+  process.exit(0)
+}
+
+if (args[0] === 'issue' && args[1] === 'close') {
+  const state = readState()
+  state.closedIssues = state.closedIssues || []
+  state.closedIssues.push({ number: args[2], repo: args[args.indexOf('--repo') + 1] || '' })
+  writeState(state)
+  process.exit(0)
+}
+
+if (args[0] === 'issue' && args[1] === 'comment') {
+  process.exit(0)
+}
+
+if (args[0] === 'label' && args[1] === 'list') {
+  respond('[]\\n')
+  process.exit(0)
+}
+
+if (args[0] === 'label' && args[1] === 'create') {
   process.exit(0)
 }
 
@@ -181,11 +206,21 @@ if (args[0] === 'api' && args[1] === 'graphql') {
         ? [{
             id: 'PSU_REMOTE',
             body: '<!-- claude-session-tracker:project-status -->\\n**Tracker state:** paused',
-            status: boardStatus || 'OFF_TRACK',
+            status: boardStatus || 'INACTIVE',
             updatedAt: '2026-03-12T00:00:00Z',
           }]
         : []
     respond(JSON.stringify({ data: { node: { statusUpdates: { nodes } } } }))
+    process.exit(0)
+  }
+
+  if (query.includes('addProjectV2ItemById')) {
+    respond(JSON.stringify({ data: { addProjectV2ItemById: { item: { id: 'PVTI_new' } } } }))
+    process.exit(0)
+  }
+
+  if (query.includes('updateProjectV2ItemFieldValue')) {
+    respond(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: payload.variables.itemId } } } }))
     process.exit(0)
   }
 
@@ -243,6 +278,7 @@ function writeTrackerInstall({ home, hooksDir, workspace, notesRepo = 'tester/pr
     'cst_session_stop.py',
     'cst_mark_done.py',
     'cst_post_tool_use.py',
+    'cst_session_end.py',
   ]) {
     writeFileSync(join(hooksDir, file), '# stub\n')
   }
@@ -304,7 +340,7 @@ function testStatusOutput() {
     status: 'waiting',
     tracking_paused: true,
     project_status_sync: {
-      status: 'OFF_TRACK',
+      status: 'INACTIVE',
       success: false,
       error: 'simulated sync error',
     },
@@ -313,7 +349,7 @@ function testStatusOutput() {
   writeFileSync(join(env.hooksDir, 'project_status_update.json'), JSON.stringify({
     project_id: 'PVT_project',
     status_update_id: 'PSU_1',
-    last_status: 'OFF_TRACK',
+    last_status: 'INACTIVE',
     last_synced_at: '2026-03-12T00:00:00Z',
   }, null, 2))
 
@@ -365,7 +401,7 @@ function testPauseResumeLifecycle() {
   const pauseCache = JSON.parse(readFileSync(join(env.hooksDir, 'project_status_update.json'), 'utf-8'))
   const ghStateAfterPause = JSON.parse(readFileSync(env.ghStatePath, 'utf-8'))
   assertOk('pause sets tracking_paused', pausedState.tracking_paused === true)
-  assertOk('pause stores OFF_TRACK cache', pauseCache.last_status === 'OFF_TRACK')
+  assertOk('pause stores INACTIVE cache', pauseCache.last_status === 'INACTIVE')
   assertOk('pause writes one status update history entry', ghStateAfterPause.statusUpdates.length === 1)
   assertOk('pause history body includes session id', ghStateAfterPause.statusUpdates[0].body.includes('**Session ID:** session-2'))
   assertOk('pause history body includes workspace path', ghStateAfterPause.statusUpdates[0].body.includes(`**Workspace:** ${env.workspace}`))
@@ -448,14 +484,14 @@ function testSessionStartBlocksOffTrackBoard() {
       cwd: env.workspace,
       transcript_path: transcriptPath,
     }),
-    extraEnv: { GH_STUB_BOARD_STATUS: 'OFF_TRACK' },
+    extraEnv: { GH_STUB_BOARD_STATUS: 'INACTIVE' },
   })
 
   assert.equal(result.status, 0)
-  assertOk('session_start prints OFF_TRACK block', result.stdout.includes('project board is currently OFF_TRACK'))
-  assertOk('session_start skips state creation when board is OFF_TRACK', !existsSync(join(env.stateDir, 'session-off-track.json')))
+  assertOk('session_start prints INACTIVE block', result.stdout.includes('project board is currently INACTIVE'))
+  assertOk('session_start skips state creation when board is INACTIVE', !existsSync(join(env.stateDir, 'session-off-track.json')))
   const runtimeStatus = JSON.parse(readFileSync(join(env.hooksDir, 'runtime_status.json'), 'utf-8'))
-  assertOk('session_start records project_off_track reason', runtimeStatus.reason === 'project_off_track')
+  assertOk('session_start records project_inactive reason', runtimeStatus.reason === 'project_inactive')
 }
 
 function testPromptSkipsWhenBoardOffTrack() {
@@ -484,15 +520,177 @@ function testPromptSkipsWhenBoardOffTrack() {
       HOME: env.home,
       PATH: `${env.binDir}:${process.env.PATH}`,
       GH_STUB_STATE: env.ghStatePath,
-      GH_STUB_BOARD_STATUS: 'OFF_TRACK',
+      GH_STUB_BOARD_STATUS: 'INACTIVE',
     },
   })
 
   assert.equal(result.status, 0)
   const state = JSON.parse(readFileSync(statePath, 'utf-8'))
-  assertOk('prompt keeps prior status when board is OFF_TRACK', state.status === 'waiting')
+  assertOk('prompt keeps prior status when board is INACTIVE', state.status === 'waiting')
   const runtimeStatus = JSON.parse(readFileSync(join(env.hooksDir, 'runtime_status.json'), 'utf-8'))
-  assertOk('prompt records project_off_track runtime status', runtimeStatus.reason === 'project_off_track')
+  assertOk('prompt records project_inactive runtime status', runtimeStatus.reason === 'project_inactive')
+}
+
+function testSessionEndClosesIssue() {
+  const env = createTestEnv()
+  writeTrackerInstall(env)
+  const sessionEndPath = join(repoRoot, 'hooks', 'cst_session_end.py')
+
+  // waiting 상태의 세션 생성
+  const statePath = join(env.stateDir, 'session-end-test.json')
+  writeFileSync(statePath, JSON.stringify({
+    session_id: 'session-end-test',
+    cwd: env.workspace,
+    repo: 'tester/private-notes',
+    issue_number: 99,
+    item_id: 'ITEM_END',
+    status: 'waiting',
+  }, null, 2))
+
+  const result = spawnSync('python3', [sessionEndPath], {
+    cwd: env.workspace,
+    encoding: 'utf-8',
+    input: JSON.stringify({ session_id: 'session-end-test' }),
+    env: {
+      ...process.env,
+      HOME: env.home,
+      PATH: `${env.binDir}:${process.env.PATH}`,
+      GH_STUB_STATE: env.ghStatePath,
+    },
+  })
+
+  assert.equal(result.status, 0)
+  const state = JSON.parse(readFileSync(statePath, 'utf-8'))
+  assertOk('session_end sets status to closed', state.status === 'closed')
+  assertOk('session_end clears timer_pid', !state.timer_pid)
+
+  const ghState = JSON.parse(readFileSync(env.ghStatePath, 'utf-8'))
+  assertOk('session_end closes GitHub issue', ghState.closedIssues?.some(i => i.number === '99'))
+}
+
+function testSessionEndSkipsAlreadyClosed() {
+  const env = createTestEnv()
+  writeTrackerInstall(env)
+  const sessionEndPath = join(repoRoot, 'hooks', 'cst_session_end.py')
+
+  const statePath = join(env.stateDir, 'session-already-closed.json')
+  writeFileSync(statePath, JSON.stringify({
+    session_id: 'session-already-closed',
+    cwd: env.workspace,
+    repo: 'tester/private-notes',
+    issue_number: 100,
+    item_id: 'ITEM_CLOSED',
+    status: 'closed',
+  }, null, 2))
+
+  const result = spawnSync('python3', [sessionEndPath], {
+    cwd: env.workspace,
+    encoding: 'utf-8',
+    input: JSON.stringify({ session_id: 'session-already-closed' }),
+    env: {
+      ...process.env,
+      HOME: env.home,
+      PATH: `${env.binDir}:${process.env.PATH}`,
+      GH_STUB_STATE: env.ghStatePath,
+    },
+  })
+
+  assert.equal(result.status, 0)
+  const ghState = JSON.parse(readFileSync(env.ghStatePath, 'utf-8'))
+  assertOk('session_end skips close for already-closed session', !ghState.closedIssues?.length)
+}
+
+function testMarkDoneClosesIssue() {
+  const env = createTestEnv()
+  writeTrackerInstall(env)
+  const markDonePath = join(repoRoot, 'hooks', 'cst_mark_done.py')
+
+  const statePath = join(env.stateDir, 'session-mark-done.json')
+  writeFileSync(statePath, JSON.stringify({
+    session_id: 'session-mark-done',
+    cwd: env.workspace,
+    repo: 'tester/private-notes',
+    issue_number: 77,
+    item_id: 'ITEM_DONE',
+    status: 'waiting',
+  }, null, 2))
+
+  // DONE_TIMEOUT_SECS=0으로 즉시 만료
+  const result = spawnSync('python3', [markDonePath, 'session-mark-done'], {
+    cwd: env.workspace,
+    encoding: 'utf-8',
+    env: {
+      ...process.env,
+      HOME: env.home,
+      PATH: `${env.binDir}:${process.env.PATH}`,
+      GH_STUB_STATE: env.ghStatePath,
+      DONE_TIMEOUT_SECS: '0',
+    },
+  })
+
+  assert.equal(result.status, 0)
+  const state = JSON.parse(readFileSync(statePath, 'utf-8'))
+  assertOk('mark_done sets status to closed', state.status === 'closed')
+
+  const ghState = JSON.parse(readFileSync(env.ghStatePath, 'utf-8'))
+  assertOk('mark_done closes GitHub issue', ghState.closedIssues?.some(i => i.number === '77'))
+}
+
+function testCleanupStaleSessions() {
+  const env = createTestEnv()
+  writeTrackerInstall(env)
+
+  // stale 세션 생성 (파일 mtime을 과거로 설정)
+  const stalePath = join(env.stateDir, 'session-stale.json')
+  writeFileSync(stalePath, JSON.stringify({
+    session_id: 'session-stale',
+    cwd: env.workspace,
+    repo: 'tester/private-notes',
+    issue_number: 55,
+    item_id: 'ITEM_STALE',
+    status: 'waiting',
+  }, null, 2))
+  // mtime을 2시간 전으로 설정
+  const past = new Date(Date.now() - 7200 * 1000)
+  utimesSync(stalePath, past, past)
+
+  // 이미 closed인 세션 (정리 대상 아님)
+  const closedPath = join(env.stateDir, 'session-already-done.json')
+  writeFileSync(closedPath, JSON.stringify({
+    session_id: 'session-already-done',
+    cwd: env.workspace,
+    repo: 'tester/private-notes',
+    issue_number: 56,
+    item_id: 'ITEM_DONE2',
+    status: 'closed',
+  }, null, 2))
+  utimesSync(closedPath, past, past)
+
+  // 새 세션 시작으로 cleanup 트리거
+  const transcriptPath = join(env.root, 'transcript-cleanup.jsonl')
+  writeFileSync(transcriptPath, '')
+
+  const result = runPythonHook({
+    ...env,
+    stdin: JSON.stringify({
+      session_id: 'session-new-after-cleanup',
+      cwd: env.workspace,
+      transcript_path: transcriptPath,
+    }),
+  })
+
+  assert.equal(result.status, 0)
+
+  // stale 세션이 closed로 변경되었는지 확인
+  const staleState = JSON.parse(readFileSync(stalePath, 'utf-8'))
+  assertOk('cleanup marks stale session as closed', staleState.status === 'closed')
+
+  // stale 세션의 issue가 close되었는지 확인
+  const ghState = JSON.parse(readFileSync(env.ghStatePath, 'utf-8'))
+  assertOk('cleanup closes stale session issue', ghState.closedIssues?.some(i => i.number === '55'))
+
+  // 이미 closed인 세션은 건드리지 않음
+  assertOk('cleanup skips already-closed session', !ghState.closedIssues?.some(i => i.number === '56'))
 }
 
 console.log('\n[cli]')
@@ -503,6 +701,10 @@ testInstallHelperConfiguresReadmeAndOnTrack()
 testSessionStartBlocksPublicRepo()
 testSessionStartBlocksOffTrackBoard()
 testPromptSkipsWhenBoardOffTrack()
+testSessionEndClosesIssue()
+testSessionEndSkipsAlreadyClosed()
+testMarkDoneClosesIssue()
+testCleanupStaleSessions()
 
 console.log(`\n${pass} passed, ${fail} failed\n`)
 if (fail > 0) process.exit(1)

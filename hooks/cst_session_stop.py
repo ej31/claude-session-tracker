@@ -21,7 +21,7 @@ from cst_github_utils import (
     cancel_timer,
     clear_runtime_status,
     get_tracker_project_status_update,
-    is_tracker_board_off_track,
+    is_tracker_board_inactive,
     is_tracking_paused,
     load_env_file,
     load_state,
@@ -66,11 +66,11 @@ def main() -> int:
         return 0
 
     try:
-        if is_tracker_board_off_track():
+        if is_tracker_board_inactive():
             status_update = get_tracker_project_status_update() or {}
             save_runtime_status({
                 "status": "blocked",
-                "reason": "project_off_track",
+                "reason": "project_inactive",
                 "cwd": state.get("cwd", ""),
                 "checked_at": datetime.now().isoformat(),
                 "status_update_id": status_update.get("id"),
@@ -78,7 +78,7 @@ def main() -> int:
             cancel_timer(state)
             state.pop("timer_pid", None)
             save_state(session_id, state)
-            logger.info(f"project board OFF_TRACK → 응답 후처리 생략: {session_id[:8]}…")
+            logger.info(f"project board INACTIVE → 응답 후처리 생략: {session_id[:8]}…")
             return 0
         clear_runtime_status()
     except Exception as e:

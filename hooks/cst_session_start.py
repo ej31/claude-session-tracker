@@ -19,13 +19,14 @@ from cst_github_utils import (
     _created_field_id,
     _notes_repo,
     _project_name_mode,
+    cleanup_stale_sessions,
     clear_runtime_status,
     cancel_timer,
     create_repo_issue_and_add_to_project,
     find_active_state_by_cwd,
     get_context_repo,
     get_tracker_project_status_update,
-    is_tracker_board_off_track,
+    is_tracker_board_inactive,
     is_repo_private,
     is_resume,
     load_env_file,
@@ -100,23 +101,31 @@ def main() -> int:
         return 0
 
     try:
-        if is_tracker_board_off_track():
+        if is_tracker_board_inactive():
             status_update = get_tracker_project_status_update() or {}
             save_runtime_status({
                 "status": "blocked",
-                "reason": "project_off_track",
+                "reason": "project_inactive",
                 "cwd": cwd,
                 "checked_at": datetime.now().isoformat(),
                 "status_update_id": status_update.get("id"),
             })
-            logger.info("project board가 OFF_TRACK 이므로 세션 등록 생략")
+            logger.info("project board가 INACTIVE 이므로 세션 등록 생략")
             print(
-                "Tracking is disabled because the configured project board is currently OFF_TRACK. "
-                "Move it back to ON_TRACK before starting a tracked session."
+                "Tracking is disabled because the configured project board is currently INACTIVE. "
+                "Resume tracking before starting a tracked session."
             )
             return 0
     except Exception as e:
         logger.error(f"project status 확인 실패: {e}")
+
+    # 오래된 고아 세션 자동 정리 (비정상 종료 등 대비)
+    try:
+        cleaned = cleanup_stale_sessions(logger)
+        if cleaned > 0:
+            logger.info(f"stale 세션 {cleaned}개 정리 완료")
+    except Exception as e:
+        logger.error(f"stale 세션 정리 실패: {e}")
 
     # 이미 이 session_id로 상태 파일이 있으면 skip
     if load_state(session_id):

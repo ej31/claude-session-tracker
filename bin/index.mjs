@@ -42,6 +42,7 @@ const PY_FILES = [
   'cst_session_stop.py',
   'cst_mark_done.py',
   'cst_post_tool_use.py',
+  'cst_session_end.py',
 ]
 const LEGACY_PY_FILES = [
   'github_utils.py',
@@ -76,7 +77,7 @@ const STATUS_ACTIONS = {
   },
   pause: {
     trackerState: 'paused',
-    boardStatus: 'OFF_TRACK',
+    boardStatus: 'INACTIVE',
     message:
       'Local tracking is paused. Prompt/response comments, issue title updates, project item status transitions, and idle auto-close are suspended until resume.',
   },
@@ -821,7 +822,7 @@ function mergeHooks(existing, hooksDir) {
         hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_session_stop.py')}`, timeout: 10, async: true }],
       }],
       SessionEnd: [{
-        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_session_stop.py')}`, timeout: 10, async: true }],
+        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_session_end.py')}`, timeout: 10, async: true }],
       }],
     },
   }
@@ -905,9 +906,9 @@ function buildProjectReadme() {
     '## Managed status flag',
     '',
     '- `ON_TRACK` means local tracking is enabled.',
-    '- `OFF_TRACK` means local tracking is paused.',
+    '- `INACTIVE` means local tracking is paused.',
     '',
-    '> Warning: do not manually change the tracker `ON_TRACK` / `OFF_TRACK` status values. Use `claude-session-tracker pause` and `claude-session-tracker resume` instead.',
+    '> Warning: do not manually change the tracker `ON_TRACK` / `INACTIVE` status values. Use `claude-session-tracker pause` and `claude-session-tracker resume` instead.',
     '',
     '## History',
     '',
@@ -1101,8 +1102,8 @@ function printStatus() {
   if (runtimeStatus) {
     const detail = runtimeStatus.reason === 'notes_repo_public'
       ? `tracking blocked because ${runtimeStatus.repo} is public`
-      : runtimeStatus.reason === 'project_off_track'
-        ? `tracking blocked because the project board is OFF_TRACK`
+      : runtimeStatus.reason === 'project_inactive'
+        ? `tracking blocked because the project board is INACTIVE`
         : `tracking blocked: ${runtimeStatus.error ?? runtimeStatus.reason}`
     console.log(`Runtime status: ${detail}`)
   }
@@ -1225,7 +1226,7 @@ function runPause() {
     console.log(`Board sync failed: ${result.error}`)
     process.exit(1)
   }
-  console.log('Project board marked OFF_TRACK.')
+  console.log('Project board marked INACTIVE.')
 }
 
 function runResume() {
