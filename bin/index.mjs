@@ -735,6 +735,17 @@ function fetchProjectMetadata(owner, number) {
   return { projectId: project.id, projectTitle: project.title, projectUrl: project.url, statusField }
 }
 
+function isProjectClosed(projectId) {
+  const query = `
+    query($projectId: ID!) {
+      node(id: $projectId) {
+        ... on ProjectV2 { closed }
+      }
+    }`
+  const response = ghGraphql(query, { projectId })
+  return response.data?.node?.closed === true
+}
+
 function deleteProjectV2(projectId) {
   const mutation = `
     mutation($projectId: ID!) {
@@ -1596,26 +1607,40 @@ async function autoSetup(username) {
       const hasAllRequiredFields = meta != null && META_REQUIRED_FIELDS.every(f => meta[f] != null)
 
       if (hasAllRequiredFields) {
-        p.log.info(`Reusing existing session storage (https://github.com/${repoFullName})`)
+        // 기존 프로젝트가 closed 상태인지 확인
+        if (isProjectClosed(meta.projectId)) {
+          p.log.warn(`Existing project #${meta.projectNumber} is closed. A new project will be created.`)
+          recovery = {
+            owner: username,
+            lang,
+            repoFullName,
+            projectTitle,
+            completedSteps: ['repo_created'],
+            updatedAt: new Date().toISOString(),
+          }
+          saveAutoSetupRecovery(recovery)
+        } else {
+          p.log.info(`Reusing existing session storage (https://github.com/${repoFullName})`)
 
-        // meta.json 에서 프로젝트 정보를 읽어서 recovery 상태 복원
-        recovery = {
-          owner: username,
-          lang,
-          repoFullName,
-          projectTitle,
-          projectNumber: meta.projectNumber,
-          projectId: meta.projectId,
-          projectUrl: meta.projectUrl,
-          statusFieldId: meta.statusFieldId,
-          statusMap: meta.statusMap,
-          createdFieldId: meta.createdFieldId,
-          lastActiveFieldId: meta.lastActiveFieldId,
-          completedSteps: ['repo_created', 'project_created', 'status_configured', 'date_fields_attempted'],
-          restoredFromExisting: true,
-          updatedAt: new Date().toISOString(),
+          // meta.json 에서 프로젝트 정보를 읽어서 recovery 상태 복원
+          recovery = {
+            owner: username,
+            lang,
+            repoFullName,
+            projectTitle,
+            projectNumber: meta.projectNumber,
+            projectId: meta.projectId,
+            projectUrl: meta.projectUrl,
+            statusFieldId: meta.statusFieldId,
+            statusMap: meta.statusMap,
+            createdFieldId: meta.createdFieldId,
+            lastActiveFieldId: meta.lastActiveFieldId,
+            completedSteps: ['repo_created', 'project_created', 'status_configured', 'date_fields_attempted'],
+            restoredFromExisting: true,
+            updatedAt: new Date().toISOString(),
+          }
+          saveAutoSetupRecovery(recovery)
         }
-        saveAutoSetupRecovery(recovery)
       } else {
         // 리포지토리는 있지만 meta.json 이 없거나 불완전한 경우 - 프로젝트 재설정 필요
         if (meta != null) {
