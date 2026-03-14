@@ -10,8 +10,14 @@ import shutil
 import signal
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
+
+
+def _now_iso() -> str:
+    """현재 시각을 ISO 8601 문자열로 반환한다."""
+    return datetime.now().isoformat()
 
 
 # ─── PATH 보정 (제한된 실행 환경에서 gh CLI를 찾기 위함) ─────────────────────
@@ -279,6 +285,7 @@ def get_tracker_project_status_update() -> Optional[dict]:
       node(id: $projectId) {
         ... on ProjectV2 {
           closed
+          public
           statusUpdates(first: 20, orderBy: { field: CREATED_AT, direction: DESC }) {
             nodes {
               id
@@ -295,6 +302,8 @@ def get_tracker_project_status_update() -> Optional[dict]:
     node = result.get("data", {}).get("node", {})
     if node.get("closed"):
         return {"_project_closed": True}
+    if node.get("public"):
+        return {"_project_public": True}
     nodes = node.get("statusUpdates", {}).get("nodes", [])
     for n in nodes:
         body = n.get("body") or ""
@@ -303,13 +312,40 @@ def get_tracker_project_status_update() -> Optional[dict]:
     return None
 
 
-def is_tracker_board_inactive() -> bool:
-    status_update = get_tracker_project_status_update()
-    if not status_update:
-        return False
-    if status_update.get("_project_closed"):
-        return True
-    return status_update.get("status") == "INACTIVE"
+def check_project_board_status(cwd: str, logger) -> Optional[str]:
+    """프로젝트 보드 상태를 확인하고, 비활성이면 reason을 반환한다.
+
+    GraphQL 쿼리를 1회만 실행하여 closed/public/INACTIVE 상태를 판별한다.
+
+    Returns:
+        비활성인 경우 reason 문자열 ("project_closed", "project_public", "project_inactive"),
+        정상이면 None
+    """
+    try:
+        status_update = get_tracker_project_status_update()
+        if not status_update:
+            clear_runtime_status()
+            return None
+        if status_update.get("_project_closed"):
+            reason = "project_closed"
+        elif status_update.get("_project_public"):
+            reason = "project_public"
+        elif status_update.get("status") == "INACTIVE":
+            reason = "project_inactive"
+        else:
+            clear_runtime_status()
+            return None
+        save_runtime_status({
+            "status": "blocked",
+            "reason": reason,
+            "cwd": cwd,
+            "checked_at": _now_iso(),
+            "status_update_id": status_update.get("id"),
+        })
+        return reason
+    except Exception as e:
+        logger.error(f"project status 확인 실패: {e}")
+        return None
 
 
 # ─── 상태 파일 ───────────────────────────────────────────────────────────────

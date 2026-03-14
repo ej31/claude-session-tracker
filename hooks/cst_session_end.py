@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from cst_github_utils import (
     cancel_timer,
+    check_project_board_status,
     close_issue,
     is_tracking_paused,
     load_env_file,
@@ -58,6 +59,12 @@ def main() -> int:
     if is_tracking_paused(state):
         logger.info(f"tracking paused → 세션 종료 처리 생략: {session_id[:8]}…")
         save_state(session_id, state)
+        return 0
+
+    board_reason = check_project_board_status(state.get("cwd", ""), logger)
+    if board_reason:
+        save_state(session_id, state)
+        logger.info(f"project board {board_reason} → 세션 종료 처리 생략: {session_id[:8]}…")
         return 0
 
     # GitHub Projects status를 "closed"로 변경
