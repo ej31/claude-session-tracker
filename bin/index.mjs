@@ -469,7 +469,6 @@ function pushFileToRepo(repoFullName, filePath, content, message) {
   if (result.status !== 0) {
     throw new Error(result.stderr?.trim() || `Failed to push ${filePath} to ${repoFullName}`)
   }
-  return JSON.parse(result.stdout)
 }
 
 function buildRepoReadme() {
@@ -1440,9 +1439,19 @@ async function autoSetup(username) {
 
     if (repoExists) {
       checkSpin.stop('Existing session storage found')
-      const meta = fetchMetaJsonFromRepo(repoFullName)
 
-      if (meta?.projectId) {
+      // 기존 리포지토리가 private 인지 검증
+      if (!ghRepoIsPrivate(repoFullName)) {
+        p.log.error(`Repository ${repoFullName} is PUBLIC. Session data may contain sensitive secrets.`)
+        p.log.error('Please make the repository private before continuing, or delete it and re-run setup.')
+        process.exit(1)
+      }
+
+      const meta = fetchMetaJsonFromRepo(repoFullName)
+      const META_REQUIRED_FIELDS = ['projectId', 'projectNumber', 'statusFieldId', 'statusMap']
+      const hasAllRequiredFields = meta != null && META_REQUIRED_FIELDS.every(f => meta[f] != null)
+
+      if (hasAllRequiredFields) {
         p.note([
           `An existing session storage (https://github.com/${repoFullName}) was found.`,
           'The existing repository and GitHub Projects will be reused.',
@@ -1451,6 +1460,9 @@ async function autoSetup(username) {
           '  Option 1 - Proceed with Manual Setup instead.',
           `  Option 2 - Rename or delete the existing GitHub Repository and GitHub Projects board.`,
         ].join('\n'), 'Existing session storage detected')
+
+        const reuseConfirmed = await p.confirm({ message: 'Continue with the existing session storage?' })
+        if (p.isCancel(reuseConfirmed) || !reuseConfirmed) onCancel()
 
         // meta.json 에서 프로젝트 정보를 읽어서 recovery 상태 복원
         recovery = {
@@ -1470,8 +1482,10 @@ async function autoSetup(username) {
         }
         saveAutoSetupRecovery(recovery)
       } else {
-        checkSpin.stop('Existing repository found (no metadata)')
-        // 리포지토리는 있지만 meta.json 이 없는 경우 - 새 프로젝트 생성 필요
+        // 리포지토리는 있지만 meta.json 이 없거나 불완전한 경우 - 프로젝트 재설정 필요
+        if (meta != null) {
+          p.log.warn('Existing metadata is incomplete. Project configuration will be re-created.')
+        }
         recovery = {
           owner: username,
           lang,
@@ -1682,25 +1696,31 @@ async function autoSetup(username) {
     }
   }
 
-  // meta.json 을 리포지토리에 푸시하여 어디서든 동일한 프로젝트를 바라보도록 함
-  const metaSpin = p.spinner()
-  metaSpin.start('Saving project metadata to repository...')
-  try {
-    const metaContent = JSON.stringify({
-      projectId: recovery.projectId,
-      projectNumber: recovery.projectNumber,
-      projectUrl: recovery.projectUrl,
-      statusFieldId: recovery.statusFieldId,
-      statusMap: recovery.statusMap,
-      createdFieldId: recovery.createdFieldId ?? null,
-      lastActiveFieldId: recovery.lastActiveFieldId ?? null,
-      updatedAt: new Date().toISOString(),
-    }, null, 2)
-    pushFileToRepo(recovery.repoFullName, META_JSON_PATH, metaContent, 'chore: update session tracker metadata')
-    metaSpin.stop('Project metadata saved to repository')
-  } catch (error) {
-    metaSpin.stop('Could not save project metadata (non-critical)')
-    p.log.warn(`Metadata push failed: ${error.message}`)
+  // meta.json 을 리포지토리에 푸시 (기존 저장소 재사용 경로에서는 이미 존재하므로 건너뜀)
+  const restoredFromMeta = recovery.completedSteps.includes('repo_created')
+    && recovery.completedSteps.includes('project_created')
+    && recovery.completedSteps.includes('status_configured')
+    && recovery.completedSteps.includes('date_fields_attempted')
+  if (!restoredFromMeta) {
+    const metaSpin = p.spinner()
+    metaSpin.start('Saving project metadata to repository...')
+    try {
+      const metaContent = JSON.stringify({
+        projectId: recovery.projectId,
+        projectNumber: recovery.projectNumber,
+        projectUrl: recovery.projectUrl,
+        statusFieldId: recovery.statusFieldId,
+        statusMap: recovery.statusMap,
+        createdFieldId: recovery.createdFieldId ?? null,
+        lastActiveFieldId: recovery.lastActiveFieldId ?? null,
+        updatedAt: new Date().toISOString(),
+      }, null, 2)
+      pushFileToRepo(recovery.repoFullName, META_JSON_PATH, metaContent, 'chore: update session tracker metadata')
+      metaSpin.stop('Project metadata saved to repository')
+    } catch (error) {
+      metaSpin.stop('Could not save project metadata (non-critical)')
+      p.log.warn(`Metadata push failed: ${error.message}`)
+    }
   }
 
   ensureProjectReadmeAfterInstall(recovery.projectId)
