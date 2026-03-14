@@ -1478,6 +1478,7 @@ async function autoSetup(username) {
           createdFieldId: meta.createdFieldId,
           lastActiveFieldId: meta.lastActiveFieldId,
           completedSteps: ['repo_created', 'project_created', 'status_configured', 'date_fields_attempted'],
+          restoredFromExisting: true,
           updatedAt: new Date().toISOString(),
         }
         saveAutoSetupRecovery(recovery)
@@ -1697,11 +1698,7 @@ async function autoSetup(username) {
   }
 
   // meta.json 을 리포지토리에 푸시 (기존 저장소 재사용 경로에서는 이미 존재하므로 건너뜀)
-  const restoredFromMeta = recovery.completedSteps.includes('repo_created')
-    && recovery.completedSteps.includes('project_created')
-    && recovery.completedSteps.includes('status_configured')
-    && recovery.completedSteps.includes('date_fields_attempted')
-  if (!restoredFromMeta) {
+  if (!recovery.restoredFromExisting) {
     const metaSpin = p.spinner()
     metaSpin.start('Saving project metadata to repository...')
     try {
