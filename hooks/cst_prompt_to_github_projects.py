@@ -49,20 +49,25 @@ def main() -> int:
     prompt_text = input_data.get("prompt", "").strip()
 
     # SessionStart(async)가 아직 완료되지 않았을 수 있으므로 재시도
+    # timeout 15초 내에서 점진적 백오프로 대기 (0.5 → 1 → 1.5 → 2 …)
     import time
 
     state = None
-    max_retries = 5
-    for attempt in range(max_retries):
+    max_wait_sec = 12
+    elapsed = 0.0
+    attempt = 0
+    while elapsed < max_wait_sec:
         state = load_state(session_id)
         if state:
             break
-        if attempt < max_retries - 1:
-            logger.info(f"상태 파일 대기 중: {session_id[:8]}… (시도 {attempt + 1}/{max_retries})")
-            time.sleep(1)
+        attempt += 1
+        interval = min(0.5 * attempt, 2.0)
+        logger.info(f"상태 파일 대기 중: {session_id[:8]}… ({elapsed:.1f}s/{max_wait_sec}s)")
+        time.sleep(interval)
+        elapsed += interval
 
     if not state:
-        logger.warning(f"상태 파일 없음: {session_id[:8]}… (SessionStart hook 확인 필요)")
+        logger.warning(f"상태 파일 없음: {session_id[:8]}… ({elapsed:.1f}s 대기 후 포기, SessionStart hook 확인 필요)")
         return 0
 
     item_id = state.get("item_id")
