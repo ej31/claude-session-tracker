@@ -13,12 +13,21 @@ import {
   readdirSync,
   realpathSync,
   statSync,
+  lstatSync,
 } from 'node:fs'
-import { join, dirname, basename } from 'node:path'
+import { join, dirname, basename, resolve } from 'node:path'
 import { homedir, networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+const PKG_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'))
+    return pkg.version || '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
+})()
 const HOME = homedir()
 const HOOKS_DIR = join(HOME, '.claude', 'hooks')
 const STATE_DIR = join(HOOKS_DIR, 'state')
@@ -813,6 +822,7 @@ function installHooksAndConfig({
   if (createdFieldId) configLines.push(`GITHUB_CREATED_FIELD_ID=${createdFieldId}`)
   if (lastActiveFieldId) configLines.push(`GITHUB_LAST_ACTIVE_FIELD_ID=${lastActiveFieldId}`)
   if (lang) configLines.push(`CST_LANG=${lang}`)
+  configLines.push(`CST_VERSION=${PKG_VERSION}`)
   writeFileSync(CONFIG_FILE, configLines.join('\n') + '\n')
 
   const settingsPath = scope === 'global'
@@ -1234,6 +1244,167 @@ function runResume() {
   console.log('Local tracking resumed.')
 }
 
+
+async function runUpdate() {
+  const config = readEnvFile(CONFIG_FILE)
+  if (!config) {
+    console.error('No installation found. Run `npx claude-session-tracker` first.')
+    process.exit(1)
+  }
+
+  const currentVersion = config.CST_VERSION || 'unknown'
+  const spin = p.spinner()
+  spin.start('Checking for updates...')
+
+  let latestVersion
+  try {
+    const res = spawnSync('npm', ['view', 'claude-session-tracker', 'version'], {
+      encoding: 'utf-8',
+      timeout: 15000,
+    })
+    if (res.status !== 0) {
+      spin.stop('Failed to check the latest version.')
+      console.error(res.stderr?.trim() || 'npm view failed')
+      process.exit(1)
+    }
+    latestVersion = res.stdout.trim()
+  } catch (error) {
+    spin.stop('Failed to check the latest version.')
+    console.error(error.message)
+    process.exit(1)
+  }
+
+  if (!latestVersion || !/^\d+\.\d+\.\d+$/.test(latestVersion)) {
+    spin.stop('Could not determine a valid latest version.')
+    process.exit(1)
+  }
+
+  const compareSemver = (a, b) => {
+    const pa = a.split('.').map(Number)
+    const pb = b.split('.').map(Number)
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0)
+    }
+    return 0
+  }
+
+  // 현재 버전을 알 수 없으면 (레거시 설치) 항상 업데이트 제안
+  const isNewer = !/^\d+\.\d+\.\d+$/.test(currentVersion) || compareSemver(latestVersion, currentVersion) > 0
+
+  if (!isNewer) {
+    spin.stop(`Already up to date (v${currentVersion}).`)
+    return
+  }
+
+  spin.stop(`Update available: ${currentVersion} → ${latestVersion}`)
+
+  const confirm = await p.confirm({
+    message: `Update to v${latestVersion}?`,
+  })
+  if (p.isCancel(confirm) || !confirm) {
+    p.log.info('Update cancelled.')
+    return
+  }
+
+  const updateSpin = p.spinner()
+  updateSpin.start('Downloading latest version...')
+
+  // npm pack으로 최신 패키지를 임시 디렉토리에 다운로드
+  const tmpDir = join(HOME, '.claude', 'hooks', '.update-tmp')
+  try {
+    const stat = lstatSync(tmpDir)
+    if (stat.isSymbolicLink()) {
+      throw new Error('Symlink detected at update temp directory')
+    }
+    rmSync(tmpDir, { recursive: true, force: true })
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw e
+  }
+  mkdirSync(tmpDir, { recursive: true, mode: 0o700 })
+
+  try {
+    const packResult = spawnSync('npm', ['pack', `claude-session-tracker@${latestVersion}`, '--pack-destination', tmpDir], {
+      encoding: 'utf-8',
+      timeout: 30000,
+    })
+    if (packResult.status !== 0) {
+      throw new Error(packResult.stderr?.trim() || 'npm pack failed')
+    }
+
+    const tarball = packResult.stdout.trim().split('\n').pop()
+    if (!tarball || !tarball.endsWith('.tgz') || tarball.includes('/') || tarball.includes('..')) {
+      throw new Error(`Unexpected npm pack output: ${tarball}`)
+    }
+    const tarPath = resolve(join(tmpDir, tarball))
+    if (!tarPath.startsWith(resolve(tmpDir))) {
+      throw new Error('Path traversal detected in tarball filename')
+    }
+
+    // tarball 풀기
+    const extractDir = join(tmpDir, 'extracted')
+    mkdirSync(extractDir, { recursive: true })
+    const tarResult = spawnSync('tar', ['xzf', tarPath, '-C', extractDir], {
+      encoding: 'utf-8',
+      timeout: 15000,
+    })
+    if (tarResult.status !== 0) {
+      throw new Error(tarResult.stderr?.trim() || 'tar extraction failed')
+    }
+
+    const packageDir = join(extractDir, 'package')
+    if (!existsSync(join(packageDir, 'package.json'))) {
+      throw new Error('Unexpected package structure after extraction')
+    }
+
+    // hook 파일을 스테이징 디렉토리에 먼저 복사 (원자적 업데이트)
+    const stagingDir = join(tmpDir, 'staging')
+    mkdirSync(stagingDir, { recursive: true })
+    const filesToUpdate = []
+    for (const file of PY_FILES) {
+      const src = join(packageDir, 'hooks', file)
+      if (existsSync(src)) {
+        const stagingPath = join(stagingDir, file)
+        copyFileSync(src, stagingPath)
+        chmodSync(stagingPath, 0o755)
+        filesToUpdate.push(file)
+      }
+    }
+
+    // 모든 파일이 준비되면 한꺼번에 이동
+    for (const file of filesToUpdate) {
+      copyFileSync(join(stagingDir, file), join(HOOKS_DIR, file))
+    }
+
+    // config.env의 CST_VERSION 업데이트
+    if (existsSync(CONFIG_FILE)) {
+      let configContent = readFileSync(CONFIG_FILE, 'utf-8')
+      if (configContent.includes('CST_VERSION=')) {
+        configContent = configContent.replace(/^CST_VERSION=.*/m, `CST_VERSION=${latestVersion}`)
+      } else {
+        configContent = configContent.trimEnd() + `\nCST_VERSION=${latestVersion}\n`
+      }
+      writeFileSync(CONFIG_FILE, configContent)
+    }
+
+    // 업데이트 체크 캐시 초기화
+    const updateCheckCache = join(HOOKS_DIR, 'update_check.json')
+    removeFileIfExists(updateCheckCache)
+
+    updateSpin.stop(`Updated ${filesToUpdate.length} hook files to v${latestVersion}.`)
+    p.log.success('Restart Claude Code to apply changes.')
+  } catch (error) {
+    updateSpin.stop('Update failed.')
+    console.error(error.message)
+    process.exit(1)
+  } finally {
+    // 임시 디렉토리 정리
+    try {
+      rmSync(tmpDir, { recursive: true, force: true })
+    } catch {
+      // noop
+    }
+  }
+}
 
 function cleanupAutoSetupArtifacts(recovery) {
   if (!recovery) return
@@ -1828,6 +1999,11 @@ async function main() {
 
   if (command === 'resume') {
     runResume()
+    return
+  }
+
+  if (command === 'update') {
+    await runUpdate()
     return
   }
 
