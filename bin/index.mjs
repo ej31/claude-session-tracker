@@ -19,8 +19,10 @@ import { join, dirname, basename, resolve } from 'node:path'
 import { homedir, networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
+import { pathToFileURL } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+const { printStatus: printStatusUI } = await import(pathToFileURL(join(__dirname, 'status.mjs')).href)
 const PKG_VERSION = (() => {
   try {
     const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'))
@@ -388,12 +390,14 @@ function listSessionStates() {
           mtimeMs: statSync(path).mtimeMs,
         }
       } catch (error) {
+        let mtime = 0
+        try { mtime = statSync(path).mtimeMs } catch { /* 파일이 삭제된 경우 무시 */ }
         return {
           ok: false,
           path,
           sessionId: name.replace(/\.json$/, ''),
           error,
-          mtimeMs: statSync(path).mtimeMs,
+          mtimeMs: mtime,
         }
       }
     })
@@ -1014,10 +1018,10 @@ function buildProjectReadme() {
     '',
     '```bash',
     '# Resume tracking (set to ON_TRACK)',
-    'npx claude-session-tracker resume',
+    'claude-session-tracker resume',
     '',
     '# Pause tracking (set to INACTIVE)',
-    'npx claude-session-tracker pause',
+    'claude-session-tracker pause',
     '```',
     '',
     '## History',
@@ -1179,66 +1183,17 @@ function describeBoardSync(sync) {
 }
 
 function printStatus() {
-  const install = getInstallState(process.cwd())
-  const config = install.config
   const activeSession = findSessionByCwd(process.cwd())
-  const projectStatusCache = loadProjectStatusCache()
-  const runtimeStatus = loadRuntimeStatus()
-
-  console.log('Claude Session Tracker Status')
-  console.log(`Install: ${install.state}`)
-  console.log(`Hook files present: ${formatYesNo(install.hookFilesPresent)}`)
-
-  for (const target of install.hookRegistrations) {
-    const detail = target.invalid
-      ? 'invalid settings.json'
-      : target.installed
-        ? 'installed'
-        : target.exists
-          ? 'present but tracker hooks missing'
-          : 'not present'
-    console.log(`Hook scope (${target.scope}): ${detail} [${target.path}]`)
-  }
-
-  if (config) {
-    const scopes = install.hookRegistrations.filter(target => target.installed).map(target => target.scope).join(', ') || 'none'
-    console.log(`Config: ${CONFIG_FILE}`)
-    console.log(`Configured scope(s): ${scopes}`)
-    console.log(`Notes repo: ${config.NOTES_REPO ?? '(missing)'}`)
-    if (config.GITHUB_PROJECT_OWNER && config.GITHUB_PROJECT_NUMBER) {
-      console.log(`Project URL: https://github.com/users/${config.GITHUB_PROJECT_OWNER}/projects/${config.GITHUB_PROJECT_NUMBER}`)
-    }
-    if (config.DONE_TIMEOUT_SECS) {
-      console.log(`Idle timeout: ${Math.floor(Number(config.DONE_TIMEOUT_SECS) / 60)} min`)
-    }
-  }
-
   if (activeSession) {
-    const { sessionId, state } = activeSession
-    console.log(`Current session: ${sessionId}`)
-    console.log(`Current status: ${state.status}`)
-    console.log(`Tracking paused: ${formatYesNo(Boolean(state.tracking_paused))}`)
-    console.log(`Issue: ${issueUrlFromState(state) ?? '(unavailable)'}`)
-    console.log(`Project status sync: ${describeBoardSync(state.project_status_sync)}`)
-  } else {
-    console.log('Current session: none')
+    activeSession.issueUrl = issueUrlFromState(activeSession.state)
   }
-
-  if (projectStatusCache) {
-    const cacheDetail = projectStatusCache.last_error
-      ? `${projectStatusCache.last_status} (last error: ${projectStatusCache.last_error})`
-      : `${projectStatusCache.last_status} at ${projectStatusCache.last_synced_at}`
-    console.log(`Project status cache: ${cacheDetail}`)
-  }
-
-  if (runtimeStatus) {
-    const detail = runtimeStatus.reason === 'notes_repo_public'
-      ? `tracking blocked because ${runtimeStatus.repo} is public`
-      : runtimeStatus.reason === 'project_inactive'
-        ? `tracking blocked because the project board is INACTIVE`
-        : `tracking blocked: ${runtimeStatus.error ?? runtimeStatus.reason}`
-    console.log(`Runtime status: ${detail}`)
-  }
+  printStatusUI({
+    install: getInstallState(process.cwd()),
+    activeSession,
+    projectStatusCache: loadProjectStatusCache(),
+    runtimeStatus: loadRuntimeStatus(),
+    version: PKG_VERSION,
+  })
 }
 
 function runDoctor() {
@@ -1334,54 +1289,78 @@ function updateSessionBoardSyncState(sessionId, state, result, status) {
   saveState(sessionId, state)
 }
 
+function findAnyActiveSession({ pausedOnly = false } = {}) {
+  return listSessionStates()
+    .filter(entry => entry.ok)
+    .filter((entry) => {
+      const state = entry.state
+      if (state.status === 'closed') return false
+      if (pausedOnly && !state.tracking_paused) return false
+      return true
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)[0] ?? null
+}
+
 function runPause() {
   const config = loadConfigOrExit()
-  const entry = findSessionByCwd(process.cwd())
-  if (!entry) {
-    console.log('No active tracked session found for this workspace.')
-    return
-  }
+  const entry = findAnyActiveSession()
 
-  const { sessionId, state } = entry
-  state.tracking_paused = true
-  state.paused_at = new Date().toISOString()
-  state.pause_scope = 'session'
-  cancelTimerPid(state.timer_pid)
-  delete state.timer_pid
-  saveState(sessionId, state)
+  if (entry) {
+    const { sessionId, state } = entry
+    state.tracking_paused = true
+    state.paused_at = new Date().toISOString()
+    state.pause_scope = 'global'
+    cancelTimerPid(state.timer_pid)
+    delete state.timer_pid
+    saveState(sessionId, state)
 
-  const result = syncProjectStatusCard(config, 'pause', state)
-  updateSessionBoardSyncState(sessionId, state, result, STATUS_ACTIONS.pause.boardStatus)
+    const result = syncProjectStatusCard(config, 'pause', state)
+    updateSessionBoardSyncState(sessionId, state, result, STATUS_ACTIONS.pause.boardStatus)
 
-  console.log('Local pause succeeded.')
-  if (!result.ok) {
-    console.log(`Board sync failed: ${result.error}`)
-    process.exit(1)
+    console.log('Local pause succeeded.')
+    if (!result.ok) {
+      console.log(`Board sync failed: ${result.error}`)
+      process.exit(1)
+    }
+  } else {
+    // 활성 세션이 없어도 보드 상태는 변경
+    const globalState = { cwd: '(global)', session_id: '(no active session)' }
+    const result = syncProjectStatusCard(config, 'pause', globalState)
+    if (!result.ok) {
+      console.log(`Board sync failed: ${result.error}`)
+      process.exit(1)
+    }
   }
   console.log('Project board marked INACTIVE.')
 }
 
 function runResume() {
   const config = loadConfigOrExit()
-  const entry = findSessionByCwd(process.cwd(), { pausedOnly: true })
-  if (!entry) {
-    console.log('No paused tracked session found for this workspace.')
-    return
+  const entry = findAnyActiveSession({ pausedOnly: true })
+
+  if (entry) {
+    const { sessionId, state } = entry
+    const result = syncProjectStatusCard(config, 'resume', state)
+    updateSessionBoardSyncState(sessionId, state, result, STATUS_ACTIONS.resume.boardStatus)
+
+    if (!result.ok) {
+      console.log(`Board sync failed: ${result.error}`)
+      process.exit(1)
+    }
+
+    delete state.tracking_paused
+    delete state.paused_at
+    delete state.pause_scope
+    saveState(sessionId, state)
+  } else {
+    // 일시정지된 세션이 없어도 보드 상태는 변경
+    const globalState = { cwd: '(global)', session_id: '(no active session)' }
+    const result = syncProjectStatusCard(config, 'resume', globalState)
+    if (!result.ok) {
+      console.log(`Board sync failed: ${result.error}`)
+      process.exit(1)
+    }
   }
-
-  const { sessionId, state } = entry
-  const result = syncProjectStatusCard(config, 'resume', state)
-  updateSessionBoardSyncState(sessionId, state, result, STATUS_ACTIONS.resume.boardStatus)
-
-  if (!result.ok) {
-    console.log(`Board sync failed: ${result.error}`)
-    process.exit(1)
-  }
-
-  delete state.tracking_paused
-  delete state.paused_at
-  delete state.pause_scope
-  saveState(sessionId, state)
   console.log('Project board marked ON_TRACK.')
   console.log('Local tracking resumed.')
 }
@@ -1572,6 +1551,56 @@ function cleanupAutoSetupArtifacts(recovery) {
   }
 
   clearAutoSetupRecovery()
+}
+
+// -- 글로벌 설치 ---------------------------------------------------------------
+
+function isInstalledGlobally() {
+  const result = spawnSync('claude-session-tracker', ['--version'], {
+    encoding: 'utf-8',
+    timeout: 5000,
+  })
+  return result.status === 0
+}
+
+async function promptGlobalInstall() {
+  if (isInstalledGlobally()) {
+    return
+  }
+
+  const shouldInstall = await p.confirm({
+    message: 'Install globally for easier access? (allows running "claude-session-tracker pause" without npx)',
+    initialValue: true,
+  })
+
+  if (p.isCancel(shouldInstall) || !shouldInstall) {
+    p.log.info('Skipped global install. You can always use: npx claude-session-tracker <command>')
+    return
+  }
+
+  const spin = p.spinner()
+  spin.start('Installing claude-session-tracker globally...')
+
+  const result = spawnSync('npm', ['install', '-g', `claude-session-tracker@${PKG_VERSION}`], {
+    encoding: 'utf-8',
+    timeout: 30000,
+  })
+
+  if (result.status === 0) {
+    spin.stop('claude-session-tracker is now available as a global command')
+  } else {
+    spin.stop('Global install failed')
+    const errMsg = result.stderr?.trim() || 'unknown error'
+    if (errMsg.includes('EACCES')) {
+      p.log.warn('Permission denied. Try one of these options')
+      p.log.info('  • Using nvm/Volta: npm install -g claude-session-tracker')
+      p.log.info('  • System Node.js:  sudo npm install -g claude-session-tracker')
+    } else {
+      p.log.warn(`Could not install globally: ${errMsg}`)
+      p.log.info('  You can install manually: npm install -g claude-session-tracker')
+    }
+    p.log.info('  Or just use: npx claude-session-tracker <command>')
+  }
 }
 
 // -- Star 요청 ----------------------------------------------------------------
@@ -2095,6 +2124,7 @@ async function autoSetup(username, flags = {}) {
 
   ensureProjectReadmeAfterInstall(recovery.projectId)
   ensureProjectOnTrackAfterInstall(recovery.projectId, process.cwd())
+  await promptGlobalInstall()
 
   clearAutoSetupRecovery()
 
@@ -2106,14 +2136,15 @@ async function autoSetup(username, flags = {}) {
     p.note([
       'Everything is all set! Here\'s what to do next:',
       '',
-      '  1. Start Claude Code and have any conversation',
-      `  2. Check your project board at: ${recovery.projectUrl}`,
+      '  1. Run "claude-session-tracker status" to verify your setup',
+      '  2. Start Claude Code and have any conversation',
+      `  3. Check your project board at: ${recovery.projectUrl}`,
       '',
       '  Session issues are stored in:',
       `     https://github.com/${recovery.repoFullName}`,
     ].join('\n'), 'You\'re ready to go!')
 
-    p.outro(`Run Claude Code and start a conversation — then check ${recovery.projectUrl}`)
+    p.outro(`Try "claude-session-tracker status" now — then start a Claude Code conversation`)
   }
 }
 
@@ -2251,7 +2282,7 @@ async function runSetup(flags = {}) {
       '',
       '  Continuing will overwrite your current settings.',
       '  To remove the existing installation first, run:',
-      '    npx claude-session-tracker uninstall',
+      '    claude-session-tracker uninstall',
     ].join('\n'), 'Already installed')
 
     const action = await p.select({
@@ -2269,6 +2300,8 @@ async function runSetup(flags = {}) {
 
   await autoSetup(username, flags)
 
+  await promptGlobalInstall()
+
   await askForStar()
 }
 
@@ -2281,10 +2314,16 @@ async function main() {
       token:        { type: 'string',  short: 't' },
       'token-stdin': { type: 'boolean', default: false },
       language:     { type: 'string',  short: 'l' },
+      version:      { type: 'boolean', short: 'v', default: false },
     },
     allowPositionals: true,
     strict: false,
   })
+
+  if (flags.version) {
+    console.log(PKG_VERSION)
+    return
+  }
 
   const command = positionals[0]
 
