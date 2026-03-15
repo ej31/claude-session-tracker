@@ -30,12 +30,14 @@ from cst_github_utils import (
     is_resume,
     load_env_file,
     load_state,
+    lock_issue,
     save_runtime_status,
     save_state,
     set_item_date_field,
     set_item_status,
     setup_logger,
 )
+from cst_hash_chain import GENESIS_HASH
 
 logger = setup_logger("session-start")
 
@@ -153,6 +155,8 @@ def main() -> int:
             cancel_timer(old_state)
             old_state["session_id"] = session_id
             old_state.pop("timer_pid", None)
+            if "prev_hash" not in old_state:
+                old_state["prev_hash"] = GENESIS_HASH
             save_state(session_id, old_state)
             set_item_status(old_state["item_id"], "registered")
             logger.info(
@@ -207,6 +211,12 @@ def main() -> int:
             labels=[context_repo] if add_context_label else None,
         )
 
+        # Issue 생성 직후 lock (외부 댓글 차단, owner는 여전히 쓰기 가능)
+        try:
+            lock_issue(notes_repo, issue_number)
+        except Exception as e:
+            logger.error(f"Issue lock 실패 (계속 진행): {e}")
+
         set_item_status(item_id, "registered")
 
         save_state(session_id, {
@@ -218,6 +228,7 @@ def main() -> int:
             "context_repo": context_repo,
             "status": "registered",
             "created_at": datetime.now().isoformat(),
+            "prev_hash": GENESIS_HASH,
         })
         logger.info(f"item 생성 완료: {item_id} repo={notes_repo}")
 

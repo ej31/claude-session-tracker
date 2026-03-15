@@ -28,6 +28,7 @@ from cst_github_utils import (
     set_item_status,
     setup_logger,
 )
+from cst_hash_chain import GENESIS_HASH, stamp_comment
 
 logger = setup_logger("session-stop")
 
@@ -104,7 +105,7 @@ def main() -> int:
         except Exception as e:
             logger.error(f"Last Active 필드 갱신 실패: {e}")
 
-    # 답변을 이슈 댓글로 저장
+    # 답변을 이슈 댓글로 저장 (hash chain 포함)
     last_message = input_data.get("last_assistant_message", "").strip()
     repo = state.get("repo")
     issue_number = state.get("issue_number")
@@ -113,9 +114,14 @@ def main() -> int:
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             label = _comment_labels()["response"]
-            comment_body = f"**[{timestamp}] {label}**\n\n{last_message}"
+            prev_hash = state.get("prev_hash", GENESIS_HASH)
+            comment_body, current_hash = stamp_comment(
+                last_message, prev_hash, timestamp, label
+            )
             add_issue_comment(repo, issue_number, comment_body)
-            logger.info(f"답변 댓글 저장: {repo}#{issue_number}")
+            state["prev_hash"] = current_hash
+            save_state(session_id, state)
+            logger.info(f"답변 댓글 저장: {repo}#{issue_number} hash={current_hash[:12]}…")
         except Exception as e:
             logger.error(f"답변 댓글 저장 실패: {e}")
 
