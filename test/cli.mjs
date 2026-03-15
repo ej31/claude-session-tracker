@@ -711,6 +711,163 @@ function testCleanupStaleSessions() {
   assertOk('cleanup skips already-closed session', !ghState.closedIssues?.some(i => i.number === '56'))
 }
 
+// -- Non-interactive mode tests -----------------------------------------------
+
+function createNoAuthGhStub(binDir) {
+  makeExecutable(join(binDir, 'gh'), `#!/usr/bin/env node
+const args = process.argv.slice(2)
+if (args[0] === 'auth' && args[1] === 'status') {
+  process.stderr.write('not logged in\\n')
+  process.exit(1)
+}
+process.exit(1)
+`)
+}
+
+function createBadTokenGhStub(binDir) {
+  makeExecutable(join(binDir, 'gh'), `#!/usr/bin/env node
+const args = process.argv.slice(2)
+if (args[0] === 'auth' && args[1] === 'status') {
+  process.stderr.write('no scopes\\n')
+  process.exit(0)
+}
+if (args[0] === 'api' && args[1] === 'user') {
+  process.stderr.write('Bad credentials\\n')
+  process.exit(1)
+}
+process.exit(1)
+`)
+}
+
+function testNonInteractiveFailsWithoutToken() {
+  const env = createTestEnv()
+  const stubDir = join(env.root, 'noauth-bin')
+  mkdirSync(stubDir, { recursive: true })
+  createNoAuthGhStub(stubDir)
+
+  const result = spawnSync('node', [cliPath, '--yes'], {
+    cwd: env.workspace,
+    encoding: 'utf-8',
+    env: {
+      ...process.env,
+      HOME: env.home,
+      PATH: `${stubDir}:${process.env.PATH}`,
+      GH_TOKEN: '',
+      GITHUB_TOKEN: '',
+    },
+  })
+
+  assert.equal(result.status, 2)
+  assertOk('non-interactive fails without token (exit 2)', result.stderr.includes('No GitHub authentication found'))
+}
+
+function testNonInteractiveFailsWithInvalidToken() {
+  const env = createTestEnv()
+  const stubDir = join(env.root, 'badtoken-bin')
+  mkdirSync(stubDir, { recursive: true })
+  createBadTokenGhStub(stubDir)
+
+  const result = spawnSync('node', [cliPath, '--yes', '--token', 'ghp_invalid'], {
+    cwd: env.workspace,
+    encoding: 'utf-8',
+    env: {
+      ...process.env,
+      HOME: env.home,
+      PATH: `${stubDir}:${process.env.PATH}`,
+      GH_TOKEN: '',
+      GITHUB_TOKEN: '',
+    },
+  })
+
+  assert.equal(result.status, 3)
+  assertOk('non-interactive fails with invalid token (exit 3)', result.stderr.includes('Token authentication failed'))
+}
+
+function testNonInteractiveInvalidLanguage() {
+  const env = createTestEnv()
+  const result = runNode(['--yes', '--language', 'fr'], {
+    ...env,
+    cwd: env.workspace,
+    extraEnv: {
+      GITHUB_TOKEN: 'ghp_test',
+    },
+  })
+
+  assertOk('invalid language produces error output',
+    result.stderr.includes('Invalid language') || result.stdout.includes('Invalid language'))
+  assertOk('invalid language exits with code 2', result.status === 2)
+}
+
+function testNonInteractiveDetectsCI() {
+  const env = createTestEnv()
+  const stubDir = join(env.root, 'noci-bin')
+  mkdirSync(stubDir, { recursive: true })
+  createNoAuthGhStub(stubDir)
+
+  const result = spawnSync('node', [cliPath], {
+    cwd: env.workspace,
+    encoding: 'utf-8',
+    env: {
+      ...process.env,
+      HOME: env.home,
+      PATH: `${stubDir}:${process.env.PATH}`,
+      CI: 'true',
+      GH_TOKEN: '',
+      GITHUB_TOKEN: '',
+    },
+  })
+
+  assert.equal(result.status, 2)
+  assertOk('CI env triggers non-interactive mode', result.stderr.includes('Non-interactive mode detected') || result.stdout.includes('Non-interactive mode detected'))
+}
+
+function testNonInteractiveTokenFromEnv() {
+  const env = createTestEnv()
+  // GITHUB_TOKEN 환경변수로 토큰이 전달되는지 확인
+  // gh stub에서 auth status가 scope를 보여주도록 설정
+  const result = runNode(['--yes', '--language', 'en'], {
+    ...env,
+    cwd: env.workspace,
+    extraEnv: {
+      GITHUB_TOKEN: 'ghp_test_token_env',
+    },
+  })
+
+  // stub gh가 인증을 처리하므로 setup이 진행됨
+  assertOk('GITHUB_TOKEN env is accepted in non-interactive mode',
+    result.stdout.includes('Authenticated as stubuser') || result.stdout.includes('Setup complete'))
+}
+
+function testNonInteractiveReinstallAutoApproves() {
+  const env = createTestEnv()
+  writeTrackerInstall(env)
+
+  // 기존 설치가 있는 상태에서 --yes로 실행하면 자동 reinstall
+  const result = runNode(['--yes', '--language', 'en'], {
+    ...env,
+    cwd: env.workspace,
+    extraEnv: {
+      GITHUB_TOKEN: 'ghp_test_token',
+    },
+  })
+
+  assertOk('non-interactive auto-reinstalls over existing installation',
+    result.stdout.includes('Existing installation detected. Reinstalling') || result.stdout.includes('Setup complete'))
+}
+
+function testExistingCommandsStillWork() {
+  const env = createTestEnv()
+  writeTrackerInstall(env)
+
+  // 기존 명령어가 positional arg로 계속 동작하는지 확인
+  const statusResult = runNode(['status'], { ...env, cwd: env.workspace })
+  assertOk('status command still works with parseArgs', statusResult.status === 0)
+
+  const doctorResult = runNode(['doctor'], { ...env, cwd: env.workspace })
+  // doctor는 exit 0 또는 1 (환경에 따라 다름) - 크래시하지 않으면 OK
+  assertOk('doctor command still works with parseArgs', doctorResult.status === 0 || doctorResult.status === 1)
+}
+
 console.log('\n[cli]')
 testStatusOutput()
 testDoctorPublicRepoFailure()
@@ -723,6 +880,15 @@ testSessionEndClosesIssue()
 testSessionEndSkipsAlreadyClosed()
 testMarkDoneClosesIssue()
 testCleanupStaleSessions()
+
+console.log('\n[non-interactive]')
+testNonInteractiveFailsWithoutToken()
+testNonInteractiveFailsWithInvalidToken()
+testNonInteractiveInvalidLanguage()
+testNonInteractiveDetectsCI()
+testNonInteractiveTokenFromEnv()
+testNonInteractiveReinstallAutoApproves()
+testExistingCommandsStillWork()
 
 console.log(`\n${pass} passed, ${fail} failed\n`)
 if (fail > 0) process.exit(1)

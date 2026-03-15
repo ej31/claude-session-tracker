@@ -18,6 +18,7 @@ import {
 import { join, dirname, basename, resolve } from 'node:path'
 import { homedir, networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { parseArgs } from 'node:util'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PKG_VERSION = (() => {
@@ -90,6 +91,98 @@ const STATUS_ACTIONS = {
     message:
       'Local tracking is active again. Normal prompt/response capture and project item status transitions will continue from the next hook event.',
   },
+}
+
+const EXIT_CODES = {
+  SUCCESS: 0,
+  GENERAL_ERROR: 1,
+  INVALID_USAGE: 2,
+  AUTH_FAILURE: 3,
+}
+
+const VALID_LANGUAGES = Object.keys(STATUS_LABELS)
+
+// -- Non-interactive mode -----------------------------------------------------
+
+function isNonInteractive(flags) {
+  return !!(
+    flags.yes ||
+    flags.ci ||
+    process.env.CI === 'true' ||
+    process.env.CI === '1' ||
+    process.env.GITHUB_ACTIONS === 'true' ||
+    process.env.GITLAB_CI ||
+    process.env.CIRCLECI ||
+    process.env.JENKINS_URL ||
+    process.env.CODEBUILD_BUILD_ID ||
+    process.env.TF_BUILD ||
+    !process.stdin.isTTY
+  )
+}
+
+function resolveToken(flags) {
+  // 1순위: --token-stdin (stdin 파이프, 가장 안전)
+  if (flags.tokenStdin) {
+    try {
+      const data = readFileSync(0, 'utf-8').trim()
+      if (data) return data
+    } catch {
+      // stdin 읽기 실패
+    }
+  }
+
+  // 2순위: GITHUB_TOKEN 환경변수
+  if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN
+
+  // 3순위: GH_TOKEN 환경변수
+  if (process.env.GH_TOKEN) return process.env.GH_TOKEN
+
+  // 4순위: --token 플래그 (프로세스 목록에 노출될 수 있음)
+  if (flags.token) {
+    if (process.stdin.isTTY) {
+      console.warn('[WARN] Passing tokens via CLI flags exposes them in process listings. Consider using GITHUB_TOKEN environment variable instead.')
+    }
+    return flags.token
+  }
+
+  // 5순위: 기존 gh auth 상태
+  if (hasCmd('gh')) {
+    const authCheck = spawnSync('gh', ['auth', 'status'], { encoding: 'utf-8' })
+    if (authCheck.status === 0) return null // gh가 이미 인증됨, 별도 토큰 불필요
+  }
+
+  return undefined // 인증 수단 없음
+}
+
+function validateResolvedToken(token) {
+  const env = token ? { ...process.env, GH_TOKEN: token } : { ...process.env }
+
+  // 토큰 인증 확인 + username 획득
+  const result = spawnSync('gh', ['api', 'user', '--jq', '.login'], { encoding: 'utf-8', env })
+  if (result.status !== 0 || !result.stdout?.trim()) {
+    return { valid: false, username: null, error: 'Token authentication failed. Verify your PAT is valid.' }
+  }
+
+  // scope 검증 (project, repo 필요)
+  const scopeCheck = spawnSync('gh', ['auth', 'status'], { encoding: 'utf-8', env })
+  const scopeOutput = (scopeCheck.stdout ?? '') + (scopeCheck.stderr ?? '')
+  if (!scopeOutput.includes('project') || !scopeOutput.includes('repo')) {
+    return {
+      valid: false,
+      username: result.stdout.trim(),
+      error: 'Token missing required scopes: project, repo. Create a PAT with these scopes.',
+    }
+  }
+
+  return { valid: true, username: result.stdout.trim(), error: null }
+}
+
+function ciSpinner(nonInteractive) {
+  if (!nonInteractive) return p.spinner()
+  return {
+    start: (msg) => console.log(`  > ${msg}`),
+    stop: (msg) => console.log(`  OK ${msg}`),
+  }
 }
 
 // -- Utilities ----------------------------------------------------------------
@@ -487,6 +580,11 @@ function buildRepoReadme() {
     '- Each Claude Code session is recorded as an issue in this repository.',
     '- Session status (registered, responding, waiting, closed) is tracked in the linked GitHub Projects board.',
     '- The `.claude-session-tracker/meta.json` file stores the GitHub Projects ID for consistent access across installations.',
+    '',
+    '> [!WARNING]',
+    '> Do NOT rename this repository or the linked GitHub Project board.',
+    '> The tracker identifies resources by their exact names.',
+    '> Renaming will cause new installations to create duplicate repositories or projects.',
   ].join('\n')
 }
 
@@ -1573,29 +1671,36 @@ async function uninstall() {
 
 // -- Auto Setup ---------------------------------------------------------------
 
-async function autoSetup(username) {
+async function autoSetup(username, flags = {}) {
+  const nonInteractive = isNonInteractive(flags)
+
   let recovery = loadAutoSetupRecovery()
   if (recovery && !hasRecoveryStep(recovery, 'hooks_installed')) {
-    p.note([
-      `  Owner      : ${recovery.owner ?? username}`,
-      `  Repository : ${recovery.repoFullName ?? '(not created yet)'}`,
-      `  Project #  : ${recovery.projectNumber ?? '(not created yet)'}`,
-      `  Steps      : ${(recovery.completedSteps ?? []).join(', ') || 'none'}`,
-    ].join('\n'), 'Incomplete auto setup detected')
+    if (nonInteractive) {
+      // 비대화형 모드에서는 자동으로 resume
+      console.log('[INFO] Incomplete setup detected. Resuming automatically.')
+    } else {
+      p.note([
+        `  Owner      : ${recovery.owner ?? username}`,
+        `  Repository : ${recovery.repoFullName ?? '(not created yet)'}`,
+        `  Project #  : ${recovery.projectNumber ?? '(not created yet)'}`,
+        `  Steps      : ${(recovery.completedSteps ?? []).join(', ') || 'none'}`,
+      ].join('\n'), 'Incomplete auto setup detected')
 
-    const action = await p.select({
-      message: 'How would you like to continue?',
-      options: [
-        { value: 'resume', label: 'Resume setup' },
-        { value: 'cleanup', label: 'Cleanup partial setup' },
-        { value: 'cancel', label: 'Cancel' },
-      ],
-    })
-    if (p.isCancel(action) || action === 'cancel') onCancel()
-    if (action === 'cleanup') {
-      cleanupAutoSetupArtifacts(recovery)
-      p.log.success('Partial auto setup has been cleaned up.')
-      recovery = null
+      const action = await p.select({
+        message: 'How would you like to continue?',
+        options: [
+          { value: 'resume', label: 'Resume setup' },
+          { value: 'cleanup', label: 'Cleanup partial setup' },
+          { value: 'cancel', label: 'Cancel' },
+        ],
+      })
+      if (p.isCancel(action) || action === 'cancel') onCancel()
+      if (action === 'cleanup') {
+        cleanupAutoSetupArtifacts(recovery)
+        p.log.success('Partial auto setup has been cleaned up.')
+        recovery = null
+      }
     }
   } else {
     recovery = null
@@ -1603,16 +1708,25 @@ async function autoSetup(username) {
 
   let lang = recovery?.lang
   if (!lang) {
-    lang = await p.select({
-      message: 'Which language for status labels?',
-      options: [
-        { value: 'en', label: 'English', hint: 'Registered, Responding, Waiting, Closed' },
-        { value: 'ko', label: 'Korean', hint: '세션 등록, 답변 중, 입력 대기, 세션 종료' },
-        { value: 'ja', label: 'Japanese', hint: 'セッション登録, 応答中, 入力待ち, セッション終了' },
-        { value: 'zh', label: 'Chinese', hint: '会话注册, 响应中, 等待输入, 会话关闭' },
-      ],
-    })
-    if (p.isCancel(lang)) onCancel()
+    if (nonInteractive) {
+      lang = flags.language ?? 'en'
+      if (!VALID_LANGUAGES.includes(lang)) {
+        console.error(`[ERROR] Invalid language: ${lang}. Valid options: ${VALID_LANGUAGES.join(', ')}`)
+        process.exit(EXIT_CODES.INVALID_USAGE)
+      }
+      console.log(`[INFO] Using language: ${lang}`)
+    } else {
+      lang = await p.select({
+        message: 'Which language for status labels?',
+        options: [
+          { value: 'en', label: 'English', hint: 'Registered, Responding, Waiting, Closed' },
+          { value: 'ko', label: 'Korean', hint: '세션 등록, 답변 중, 입력 대기, 세션 종료' },
+          { value: 'ja', label: 'Japanese', hint: 'セッション登録, 応答中, 入力待ち, セッション終了' },
+          { value: 'zh', label: 'Chinese', hint: '会话注册, 响应中, 等待输入, 会话关闭' },
+        ],
+      })
+      if (p.isCancel(lang)) onCancel()
+    }
   }
 
   const repoFullName = `${username}/${SESSION_STORAGE_REPO_NAME}`
@@ -1620,7 +1734,7 @@ async function autoSetup(username) {
 
   if (!recovery) {
     // 기존 세션 저장소 리포지토리 존재 여부 확인
-    const checkSpin = p.spinner()
+    const checkSpin = ciSpinner(nonInteractive)
     checkSpin.start('Checking for existing session storage...')
     const repoExists = sessionStorageRepoExists(username)
 
@@ -1740,26 +1854,36 @@ async function autoSetup(username) {
   const contextRepoExample = getContextRepoExample(recovery.repoFullName)
   const displayExamples = getProjectNameDisplayExamples(contextRepoExample)
 
-  p.note([
-    'A private repository will be created for storing session issues.',
-    '',
-    `  Repository : ${recovery.repoFullName} (private)`,
-    `  Project    : ${recovery.projectTitle}`,
-    `  Statuses   : ${labels.registered}, ${labels.responding}, ${labels.waiting}, ${labels.closed}`,
-    `  Date fields: Session Created, Last Active`,
-    `  Display    : Label mode`,
-    `  Example    : Issue title "${displayExamples.labelTitle}"`,
-    `  Labels     : claude-code, ${displayExamples.labelName}`,
-    `  Repo source: Current workspace repo if available, otherwise ${recovery.repoFullName}`,
-    '  Scope      : Global',
-    '  Timeout    : 30 min',
-  ].join('\n'), 'Setup plan')
+  if (nonInteractive) {
+    console.log('[INFO] Setup plan:')
+    console.log(`  Repository : ${recovery.repoFullName} (private)`)
+    console.log(`  Project    : ${recovery.projectTitle}`)
+    console.log(`  Statuses   : ${labels.registered}, ${labels.responding}, ${labels.waiting}, ${labels.closed}`)
+    console.log(`  Language   : ${lang}`)
+  } else {
+    p.note([
+      'A private repository will be created for storing session issues.',
+      '',
+      `  Repository : ${recovery.repoFullName} (private)`,
+      `  Project    : ${recovery.projectTitle}`,
+      `  Statuses   : ${labels.registered}, ${labels.responding}, ${labels.waiting}, ${labels.closed}`,
+      `  Date fields: Session Created, Last Active`,
+      `  Display    : Label mode`,
+      `  Example    : Issue title "${displayExamples.labelTitle}"`,
+      `  Labels     : claude-code, ${displayExamples.labelName}`,
+      `  Repo source: Current workspace repo if available, otherwise ${recovery.repoFullName}`,
+      '  Scope      : Global',
+      '  Timeout    : 30 min',
+    ].join('\n'), 'Setup plan')
+  }
 
   if (!hasRecoveryStep(recovery, 'repo_created')) {
-    const confirmed = await p.confirm({ message: 'Looks good? Ready to create everything?' })
-    if (p.isCancel(confirmed) || !confirmed) onCancel()
+    if (!nonInteractive) {
+      const confirmed = await p.confirm({ message: 'Looks good? Ready to create everything?' })
+      if (p.isCancel(confirmed) || !confirmed) onCancel()
+    }
 
-    const repoSpin = p.spinner()
+    const repoSpin = ciSpinner(nonInteractive)
     repoSpin.start('Creating private repository...')
     try {
       ghCommand([
@@ -1773,13 +1897,19 @@ async function autoSetup(username) {
       repoSpin.stop('Repository created')
       recovery = markAutoSetupStep(recovery, 'repo_created')
     } catch (error) {
-      repoSpin.stop('Failed to create repository')
-      p.log.error(error.message)
-      process.exit(1)
+      // 동시 설치 시 다른 서버가 이미 생성한 경우 - 기존 repo 사용
+      if (error.message.includes('already exists')) {
+        repoSpin.stop('Repository already exists (concurrent installation detected)')
+        recovery = markAutoSetupStep(recovery, 'repo_created')
+      } else {
+        repoSpin.stop('Failed to create repository')
+        p.log.error(error.message)
+        process.exit(EXIT_CODES.GENERAL_ERROR)
+      }
     }
 
     // 새 리포지토리에 README.md 푸시
-    const readmeSpin = p.spinner()
+    const readmeSpin = ciSpinner(nonInteractive)
     readmeSpin.start('Pushing README.md to repository...')
     try {
       pushFileToRepo(recovery.repoFullName, 'README.md', buildRepoReadme(), 'docs: add session storage README with security warning')
@@ -1791,25 +1921,35 @@ async function autoSetup(username) {
   }
 
   if (!hasRecoveryStep(recovery, 'project_created')) {
-    const projectSpin = p.spinner()
+    const projectSpin = ciSpinner(nonInteractive)
     projectSpin.start('Creating GitHub Project...')
     try {
-      ghCommand(['project', 'create', '--title', recovery.projectTitle, '--owner', username])
+      // 동시 설치 대응: 생성 전에 동일 이름의 기존 프로젝트 확인
       const listOutput = ghCommand(['project', 'list', '--owner', username, '--format', 'json', '--limit', '20'])
       const projects = JSON.parse(listOutput).projects ?? []
-      const created = projects.find(project => project.title === recovery.projectTitle)
-      if (!created) throw new Error('Project was created but could not be found in project list.')
-      projectSpin.stop(`Project created (#${created.number})`)
-      recovery = markAutoSetupStep(recovery, 'project_created', { projectNumber: created.number })
+      const existing = projects.find(project => project.title === recovery.projectTitle)
+
+      if (existing) {
+        projectSpin.stop(`Reusing existing project (#${existing.number})`)
+        recovery = markAutoSetupStep(recovery, 'project_created', { projectNumber: existing.number })
+      } else {
+        ghCommand(['project', 'create', '--title', recovery.projectTitle, '--owner', username])
+        const refreshOutput = ghCommand(['project', 'list', '--owner', username, '--format', 'json', '--limit', '20'])
+        const refreshed = JSON.parse(refreshOutput).projects ?? []
+        const created = refreshed.find(project => project.title === recovery.projectTitle)
+        if (!created) throw new Error('Project was created but could not be found in project list.')
+        projectSpin.stop(`Project created (#${created.number})`)
+        recovery = markAutoSetupStep(recovery, 'project_created', { projectNumber: created.number })
+      }
     } catch (error) {
       projectSpin.stop('Failed to create project')
       p.log.error(error.message)
-      process.exit(1)
+      process.exit(EXIT_CODES.GENERAL_ERROR)
     }
   }
 
   if (!recovery.projectId) {
-    const fetchSpin = p.spinner()
+    const fetchSpin = ciSpinner(nonInteractive)
     fetchSpin.start('Fetching project metadata...')
     let projectMeta
     try {
@@ -1830,7 +1970,7 @@ async function autoSetup(username) {
   }
 
   if (!hasRecoveryStep(recovery, 'status_configured')) {
-    const statusSpin = p.spinner()
+    const statusSpin = ciSpinner(nonInteractive)
     statusSpin.start('Configuring status options...')
     try {
       const labelKeys = ['registered', 'responding', 'waiting', 'closed']
@@ -1871,7 +2011,7 @@ async function autoSetup(username) {
   }
 
   if (!hasRecoveryStep(recovery, 'date_fields_attempted')) {
-    const dateFieldSpin = p.spinner()
+    const dateFieldSpin = ciSpinner(nonInteractive)
     dateFieldSpin.start('Creating custom date fields...')
     let createdFieldId = recovery.createdFieldId
     let lastActiveFieldId = recovery.lastActiveFieldId
@@ -1904,7 +2044,7 @@ async function autoSetup(username) {
   }
 
   if (!hasRecoveryStep(recovery, 'hooks_installed')) {
-    const installSpin = p.spinner()
+    const installSpin = ciSpinner(nonInteractive)
     installSpin.start('Installing hooks...')
     try {
       installHooksAndConfig({
@@ -1932,7 +2072,7 @@ async function autoSetup(username) {
 
   // meta.json 을 리포지토리에 푸시 (기존 저장소 재사용 경로에서는 이미 존재하므로 건너뜀)
   if (!recovery.restoredFromExisting) {
-    const metaSpin = p.spinner()
+    const metaSpin = ciSpinner(nonInteractive)
     metaSpin.start('Saving project metadata to repository...')
     try {
       const metaContent = JSON.stringify({
@@ -1957,23 +2097,83 @@ async function autoSetup(username) {
   ensureProjectOnTrackAfterInstall(recovery.projectId, process.cwd())
 
   clearAutoSetupRecovery()
-  p.note([
-    'Everything is all set! Here\'s what to do next:',
-    '',
-    '  1. Start Claude Code and have any conversation',
-    `  2. Check your project board at: ${recovery.projectUrl}`,
-    '',
-    '  Session issues are stored in:',
-    `     https://github.com/${recovery.repoFullName}`,
-  ].join('\n'), 'You\'re ready to go!')
 
-  p.outro(`Run Claude Code and start a conversation — then check ${recovery.projectUrl}`)
+  if (nonInteractive) {
+    console.log('[OK] Setup complete!')
+    console.log(`  Project board: ${recovery.projectUrl}`)
+    console.log(`  Session repo : https://github.com/${recovery.repoFullName}`)
+  } else {
+    p.note([
+      'Everything is all set! Here\'s what to do next:',
+      '',
+      '  1. Start Claude Code and have any conversation',
+      `  2. Check your project board at: ${recovery.projectUrl}`,
+      '',
+      '  Session issues are stored in:',
+      `     https://github.com/${recovery.repoFullName}`,
+    ].join('\n'), 'You\'re ready to go!')
+
+    p.outro(`Run Claude Code and start a conversation — then check ${recovery.projectUrl}`)
+  }
 }
 
 
 // -- Main ---------------------------------------------------------------------
 
-async function runSetup() {
+async function runSetup(flags = {}) {
+  const nonInteractive = isNonInteractive(flags)
+
+  // 비대화형 모드: 토큰 해석 및 검증
+  if (nonInteractive) {
+    console.log('[INFO] Non-interactive mode detected')
+
+    if (!hasCmd('python3')) {
+      console.error('[ERROR] Missing required tool: python3')
+      console.error('  Install Python 3 from https://python.org')
+      process.exit(EXIT_CODES.INVALID_USAGE)
+    }
+
+    if (!hasCmd('gh')) {
+      console.error('[ERROR] Missing required tool: gh (GitHub CLI)')
+      console.error('  Install from https://cli.github.com')
+      process.exit(EXIT_CODES.INVALID_USAGE)
+    }
+
+    const token = resolveToken(flags)
+    if (token === undefined) {
+      console.error('[ERROR] No GitHub authentication found.')
+      console.error('  Provide a token using one of the following methods (in priority order):')
+      console.error('    1. echo $TOKEN | npx claude-session-tracker --yes --token-stdin')
+      console.error('    2. GITHUB_TOKEN=ghp_xxx npx claude-session-tracker --yes')
+      console.error('    3. npx claude-session-tracker --yes --token ghp_xxx')
+      console.error('    4. Pre-authenticate with: gh auth login')
+      process.exit(EXIT_CODES.INVALID_USAGE)
+    }
+
+    // 토큰을 gh CLI에 주입 (null이면 기존 gh auth 사용)
+    if (token) {
+      process.env.GH_TOKEN = token
+    }
+
+    // 토큰 유효성 검증
+    const validation = validateResolvedToken(token)
+    if (!validation.valid) {
+      console.error(`[ERROR] ${validation.error}`)
+      process.exit(EXIT_CODES.AUTH_FAILURE)
+    }
+
+    const username = validation.username
+    console.log(`[INFO] Authenticated as ${username}`)
+
+    if (existsSync(CONFIG_FILE)) {
+      console.log('[INFO] Existing installation detected. Reinstalling.')
+    }
+
+    await autoSetup(username, flags)
+    return
+  }
+
+  // 대화형 모드: 기존 동작 유지
   console.clear()
   p.intro(' Claude Session Tracker — Setup ')
 
@@ -2067,13 +2267,26 @@ async function runSetup() {
     }
   }
 
-  await autoSetup(username)
+  await autoSetup(username, flags)
 
   await askForStar()
 }
 
 async function main() {
-  const command = process.argv[2]
+  const { values: flags, positionals } = parseArgs({
+    args: process.argv.slice(2),
+    options: {
+      yes:          { type: 'boolean', short: 'y', default: false },
+      ci:           { type: 'boolean', default: false },
+      token:        { type: 'string',  short: 't' },
+      'token-stdin': { type: 'boolean', default: false },
+      language:     { type: 'string',  short: 'l' },
+    },
+    allowPositionals: true,
+    strict: false,
+  })
+
+  const command = positionals[0]
 
   if (command === 'status') {
     printStatus()
@@ -2105,7 +2318,7 @@ async function main() {
     return
   }
 
-  await runSetup()
+  await runSetup(flags)
 }
 
 main().catch((error) => {
