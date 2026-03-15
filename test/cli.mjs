@@ -375,10 +375,10 @@ function testStatusOutput() {
 
   const result = runNode(['status'], { ...env, cwd: env.workspace })
   assert.equal(result.status, 0)
-  assertOk('status shows installed state', result.stdout.includes('Install: installed'))
-  assertOk('status shows paused session', result.stdout.includes('Tracking paused: yes'))
+  assertOk('status shows installed state', result.stdout.includes('Installed and active'))
+  assertOk('status shows paused session', result.stdout.includes('paused'))
   assertOk('status shows board sync error', result.stdout.includes('simulated sync error'))
-  assertOk('status shows runtime block detail', result.stdout.includes('tracking blocked because tester/private-notes is public'))
+  assertOk('status shows runtime block detail', result.stdout.includes('tester/private-notes is public'))
 }
 
 function testDoctorPublicRepoFailure() {
@@ -435,7 +435,7 @@ function testPauseResumeLifecycle() {
 function testInstallHelperConfiguresReadmeAndOnTrack() {
   const env = createTestEnv()
   writeTrackerInstall(env)
-  const tempModule = join(repoRoot, `.tmp-install-recheck-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
+  const tempModule = join(repoRoot, 'bin', `.tmp-install-recheck-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
   const source = readFileSync(cliPath, 'utf-8').replace(
     /\nmain\(\)\.catch\(\(error\) => \{\n  console\.error\(error\.message\)\n  process\.exit\(1\)\n\}\)\s*$/,
     '',
@@ -711,6 +711,40 @@ function testCleanupStaleSessions() {
   assertOk('cleanup skips already-closed session', !ghState.closedIssues?.some(i => i.number === '56'))
 }
 
+function testVersionFlag() {
+  const env = createTestEnv()
+  const result = runNode(['--version'], { ...env, cwd: env.workspace })
+  assert.equal(result.status, 0)
+  const version = result.stdout.trim()
+  assertOk('--version prints valid semver', /^\d+\.\d+\.\d+/.test(version))
+
+  const resultV = runNode(['-v'], { ...env, cwd: env.workspace })
+  assert.equal(resultV.status, 0)
+  assertOk('-v prints same version', resultV.stdout.trim() === version)
+}
+
+function testPauseResumeWithoutSession() {
+  const env = createTestEnv()
+  writeTrackerInstall(env)
+
+  // 세션 파일 없이 pause 실행 (다른 cwd에서)
+  const pauseResult = runNode(['pause'], { ...env, cwd: env.root })
+  assert.equal(pauseResult.status, 0)
+  assertOk('pause without session syncs board', pauseResult.stdout.includes('Project board marked INACTIVE'))
+
+  const pauseCache = JSON.parse(readFileSync(join(env.hooksDir, 'project_status_update.json'), 'utf-8'))
+  assertOk('pause without session stores INACTIVE cache', pauseCache.last_status === 'INACTIVE')
+
+  const ghState = JSON.parse(readFileSync(env.ghStatePath, 'utf-8'))
+  assertOk('pause without session creates status update', ghState.statusUpdates.length === 1)
+  assertOk('pause without session body shows no active session', ghState.statusUpdates[0].body.includes('(no active session)'))
+
+  // 세션 파일 없이 resume 실행
+  const resumeResult = runNode(['resume'], { ...env, cwd: env.root })
+  assert.equal(resumeResult.status, 0)
+  assertOk('resume without session syncs board', resumeResult.stdout.includes('Project board marked ON_TRACK'))
+}
+
 // -- Non-interactive mode tests -----------------------------------------------
 
 function createNoAuthGhStub(binDir) {
@@ -872,6 +906,7 @@ console.log('\n[cli]')
 testStatusOutput()
 testDoctorPublicRepoFailure()
 testPauseResumeLifecycle()
+testPauseResumeWithoutSession()
 testInstallHelperConfiguresReadmeAndOnTrack()
 testSessionStartBlocksPublicRepo()
 testSessionStartBlocksOffTrackBoard()
@@ -880,6 +915,7 @@ testSessionEndClosesIssue()
 testSessionEndSkipsAlreadyClosed()
 testMarkDoneClosesIssue()
 testCleanupStaleSessions()
+testVersionFlag()
 
 console.log('\n[non-interactive]')
 testNonInteractiveFailsWithoutToken()
