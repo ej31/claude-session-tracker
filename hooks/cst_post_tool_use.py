@@ -17,8 +17,10 @@ from cst_github_utils import (
     is_tracking_paused,
     load_env_file,
     load_state,
+    save_state,
     setup_logger,
 )
+from cst_hash_chain import GENESIS_HASH, stamp_comment
 
 logger = setup_logger("post-tool-use")
 
@@ -84,9 +86,15 @@ def main() -> int:
 
     try:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        comment_body = f"**[{timestamp}] 선택**\n\n" + "\n".join(lines)
+        content_text = "\n".join(lines)
+        prev_hash = state.get("prev_hash", GENESIS_HASH)
+        comment_body, current_hash = stamp_comment(
+            content_text, prev_hash, timestamp, "선택"
+        )
         add_issue_comment(repo, issue_number, comment_body)
-        logger.info(f"선택 댓글 저장: {repo}#{issue_number} answers={answers}")
+        state["prev_hash"] = current_hash
+        save_state(session_id, state)
+        logger.info(f"선택 댓글 저장: {repo}#{issue_number} hash={current_hash[:12]}…")
     except Exception as e:
         logger.error(f"선택 댓글 저장 실패: {e}")
 

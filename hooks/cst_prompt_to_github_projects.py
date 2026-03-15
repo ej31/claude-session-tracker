@@ -29,6 +29,7 @@ from cst_github_utils import (
     setup_logger,
     update_issue_title,
 )
+from cst_hash_chain import GENESIS_HASH, stamp_comment
 
 logger = setup_logger("prompt-to-github")
 
@@ -157,15 +158,20 @@ def main() -> int:
         except Exception as e:
             logger.error(f"컨텍스트 라벨 보정 실패: {e}")
 
-    # 프롬프트를 이슈 댓글로 저장
+    # 프롬프트를 이슈 댓글로 저장 (hash chain 포함)
     if repo and issue_number and prompt_text:
         try:
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             label = _comment_labels()["prompt"]
-            comment_body = f"**[{timestamp}] {label}**\n\n{prompt_text}"
+            prev_hash = state.get("prev_hash", GENESIS_HASH)
+            comment_body, current_hash = stamp_comment(
+                prompt_text, prev_hash, timestamp, label
+            )
             add_issue_comment(repo, issue_number, comment_body)
-            logger.info(f"프롬프트 댓글 저장: {repo}#{issue_number}")
+            state["prev_hash"] = current_hash
+            save_state(session_id, state)
+            logger.info(f"프롬프트 댓글 저장: {repo}#{issue_number} hash={current_hash[:12]}…")
         except Exception as e:
             logger.error(f"프롬프트 댓글 저장 실패: {e}")
 
