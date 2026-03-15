@@ -36,6 +36,8 @@ No config files to write. No tokens to paste. Just run the installer and forget 
 npx claude-session-tracker
 ```
 
+The installer will offer to install the CLI globally so you can run commands like `claude-session-tracker pause` directly.
+
 ### What the installer does
 
 Everything is automatic. You just pick a language and hit enter.

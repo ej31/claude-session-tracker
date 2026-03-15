@@ -2314,17 +2314,18 @@ async function main() {
       token:        { type: 'string',  short: 't' },
       'token-stdin': { type: 'boolean', default: false },
       language:     { type: 'string',  short: 'l' },
+      version:      { type: 'boolean', short: 'v', default: false },
     },
     allowPositionals: true,
     strict: false,
   })
 
-  const command = positionals[0]
-
-  if (command === '--version' || command === '-v') {
+  if (flags.version) {
     console.log(PKG_VERSION)
     return
   }
+
+  const command = positionals[0]
 
   if (command === 'status') {
     printStatus()
