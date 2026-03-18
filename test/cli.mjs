@@ -256,6 +256,21 @@ if (args[0] === 'api' && args[1] === 'graphql') {
     process.exit(0)
   }
 
+  if (query.includes('repository(owner:') && query.includes('{ id }')) {
+    respond(JSON.stringify({ data: { repository: { id: 'R_repo123' } } }))
+    process.exit(0)
+  }
+
+  if (query.includes('linkProjectV2ToRepository')) {
+    state.repoLinked = {
+      projectId: payload.variables.projectId,
+      repositoryId: payload.variables.repositoryId,
+    }
+    writeState(state)
+    respond(JSON.stringify({ data: { linkProjectV2ToRepository: { repository: { id: payload.variables.repositoryId } } } }))
+    process.exit(0)
+  }
+
   if (query.includes('addProjectV2ItemById')) {
     respond(JSON.stringify({ data: { addProjectV2ItemById: { item: { id: 'PVTI_new' } } } }))
     process.exit(0)
@@ -906,6 +921,13 @@ function testNonInteractiveTokenFromEnv() {
   // stub gh가 인증을 처리하므로 setup이 진행됨
   assertOk('GITHUB_TOKEN env is accepted in non-interactive mode',
     result.stdout.includes('Authenticated as stubuser') || result.stdout.includes('Setup complete'))
+
+  // linkProjectV2ToRepository 호출 검증
+  const ghState = JSON.parse(readFileSync(env.ghStatePath, 'utf-8'))
+  assertOk('setup links repository to project',
+    ghState.repoLinked != null && ghState.repoLinked.projectId === 'PVT_project' && ghState.repoLinked.repositoryId === 'R_repo123')
+  assertOk('setup output confirms repo linked',
+    result.stdout.includes('Repository linked to project'))
 }
 
 function testNonInteractiveReinstallAutoApproves() {

@@ -43,6 +43,7 @@ const PROJECT_STATUS_MARKER = '<!-- claude-session-tracker:project-status -->'
 const AUTO_SETUP_STEPS = [
   'repo_created',
   'project_created',
+  'repo_linked',
   'status_configured',
   'date_fields_attempted',
   'hooks_installed',
@@ -1842,7 +1843,7 @@ async function autoSetup(username, flags = {}) {
             statusMap: meta.statusMap,
             createdFieldId: meta.createdFieldId,
             lastActiveFieldId: meta.lastActiveFieldId,
-            completedSteps: ['repo_created', 'project_created', 'status_configured', 'date_fields_attempted'],
+            completedSteps: ['repo_created', 'project_created', 'repo_linked', 'status_configured', 'date_fields_attempted'],
             restoredFromExisting: true,
             updatedAt: new Date().toISOString(),
           }
@@ -1963,10 +1964,21 @@ async function autoSetup(username, flags = {}) {
         recovery = markAutoSetupStep(recovery, 'project_created', { projectNumber: existing.number })
       } else {
         ghCommand(['project', 'create', '--title', recovery.projectTitle, '--owner', username])
-        const refreshOutput = ghCommand(['project', 'list', '--owner', username, '--format', 'json', '--limit', '20'])
-        const refreshed = JSON.parse(refreshOutput).projects ?? []
-        const created = refreshed.find(project => project.title === recovery.projectTitle)
-        if (!created) throw new Error('Project was created but could not be found in project list.')
+        // GitHub Project 생성 후 목록 반영까지 3~10초 소요될 수 있으므로 재시도
+        const MAX_RETRIES = 5
+        const RETRY_DELAY_MS = 2000
+        let created = null
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+          const refreshOutput = ghCommand(['project', 'list', '--owner', username, '--format', 'json', '--limit', '20'])
+          const refreshed = JSON.parse(refreshOutput).projects ?? []
+          created = refreshed.find(project => project.title === recovery.projectTitle)
+          if (created) break
+          if (attempt < MAX_RETRIES) {
+            projectSpin.message(`Waiting for project to appear (attempt ${attempt}/${MAX_RETRIES})...`)
+            spawnSync('sleep', [String(RETRY_DELAY_MS / 1000)])
+          }
+        }
+        if (!created) throw new Error('Project was created but could not be found in project list after multiple retries.')
         projectSpin.stop(`Project created (#${created.number})`)
         recovery = markAutoSetupStep(recovery, 'project_created', { projectNumber: created.number })
       }
@@ -1995,6 +2007,41 @@ async function autoSetup(username, flags = {}) {
       fetchSpin.stop('Failed to fetch project metadata')
       p.log.error(error.message)
       process.exit(1)
+    }
+  }
+
+  if (!hasRecoveryStep(recovery, 'repo_linked')) {
+    const linkSpin = ciSpinner(nonInteractive)
+    linkSpin.start('Linking repository to project...')
+    try {
+      // Repository node ID 조회
+      const repoQuery = `
+        query($owner: String!, $name: String!) {
+          repository(owner: $owner, name: $name) { id }
+        }`
+      const [repoOwner, repoName] = recovery.repoFullName.split('/')
+      const repoResponse = ghGraphql(repoQuery, { owner: repoOwner, name: repoName })
+      const repositoryId = repoResponse.data?.repository?.id
+      if (!repositoryId) throw new Error(`Could not resolve repository node ID for ${recovery.repoFullName}`)
+
+      // Project에 Repository를 default repository로 연결
+      const linkMutation = `
+        mutation($projectId: ID!, $repositoryId: ID!) {
+          linkProjectV2ToRepository(input: {
+            projectId: $projectId
+            repositoryId: $repositoryId
+          }) {
+            repository { id }
+          }
+        }`
+      ghGraphql(linkMutation, { projectId: recovery.projectId, repositoryId })
+      linkSpin.stop('Repository linked to project')
+      recovery = markAutoSetupStep(recovery, 'repo_linked')
+    } catch (error) {
+      // 이미 연결되어 있는 경우 등 비치명적 오류 허용
+      linkSpin.stop('Repository linking skipped (non-critical)')
+      p.log.warn(`Could not link repository to project: ${error.message}`)
+      recovery = markAutoSetupStep(recovery, 'repo_linked')
     }
   }
 
