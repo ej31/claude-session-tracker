@@ -53,6 +53,52 @@ Everything is automatic. You just pick a language and hit enter.
 
 Already installed? Re-running the installer just reuses your existing setup. No duplicates, no mess.
 
+### CI / Non-interactive Install
+
+Spinning up dev containers? Baking a dotfiles image? Onboarding 50 devs and _really_ don't want to answer the same prompts 50 times? That's what `--yes` is for. One flag, zero prompts, done.
+
+Add `--yes` (or `-y`) to skip all interactive prompts. The installer also auto-detects CI environments (`CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL`, `CODEBUILD_BUILD_ID`, `TF_BUILD`) and non-TTY stdin — so if you're already in a pipeline, it just works.
+
+```bash
+# Recommended — pipe token via stdin (never appears in process listings)
+echo "$TOKEN" | npx claude-session-tracker --yes --token-stdin
+
+# Via environment variable
+GITHUB_TOKEN=ghp_xxx npx claude-session-tracker --yes
+
+# Via flag (less secure — visible in process listings)
+npx claude-session-tracker --yes --token ghp_xxx
+
+# If gh is already authenticated, no token needed
+npx claude-session-tracker --yes
+```
+
+Use `--language` (or `-l`) to set the status label language. Valid values: `en`, `ko`, `ja`, `zh`. Defaults to `en`.
+
+```bash
+npx claude-session-tracker --yes --language ko
+```
+
+**Exit codes**
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | General error |
+| 2 | Invalid usage (missing tool, bad language, no auth) |
+| 3 | Authentication failure (invalid token or missing scopes) |
+
+**CLI flags**
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--yes` | `-y` | Skip all prompts |
+| `--ci` | | Force non-interactive mode |
+| `--token <PAT>` | `-t` | GitHub Personal Access Token |
+| `--token-stdin` | | Read token from stdin |
+| `--language <code>` | `-l` | Status label language (`en`, `ko`, `ja`, `zh`) |
+| `--version` | `-v` | Print version and exit |
+
 ---
 
 ### Key features
