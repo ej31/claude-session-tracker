@@ -59,12 +59,16 @@ if (args[0] === 'api' && args[1] && args[1].startsWith('repos/')) {
   process.exit(0)
 }
 
+if (args[0] === 'repo' && args[1] === 'create') {
+  process.exit(0)
+}
+
 if (args[0] === 'project' && args[1] === 'create') {
   process.exit(0)
 }
 
 if (args[0] === 'project' && args[1] === 'list') {
-  respond(JSON.stringify({ projects: [{ title: 'Claude Session Tracker', number: 1 }] }))
+  respond(JSON.stringify({ projects: [{ title: "stubuser's Claude Session Storage", number: 1 }] }))
   process.exit(0)
 }
 
@@ -217,6 +221,53 @@ if (args[0] === 'api' && args[1] === 'graphql') {
           }]
         : []
     respond(JSON.stringify({ data: { node: { statusUpdates: { nodes } } } }))
+    process.exit(0)
+  }
+
+  if (query.includes('updateProjectV2Field(input:')) {
+    respond(JSON.stringify({
+      data: {
+        updateProjectV2Field: {
+          projectV2Field: {
+            options: [
+              { id: 'opt_reg', name: 'Registered' },
+              { id: 'opt_resp', name: 'Responding' },
+              { id: 'opt_wait', name: 'Waiting' },
+              { id: 'opt_closed', name: 'Closed' },
+            ],
+          },
+        },
+      },
+    }))
+    process.exit(0)
+  }
+
+  if (query.includes('createProjectV2Field(input:')) {
+    respond(JSON.stringify({
+      data: {
+        createProjectV2Field: {
+          projectV2Field: {
+            id: 'PF_' + (payload.variables.name || '').replace(/\\s/g, '_'),
+            name: payload.variables.name,
+          },
+        },
+      },
+    }))
+    process.exit(0)
+  }
+
+  if (query.includes('repository(owner:') && query.includes('{ id }')) {
+    respond(JSON.stringify({ data: { repository: { id: 'R_repo123' } } }))
+    process.exit(0)
+  }
+
+  if (query.includes('linkProjectV2ToRepository')) {
+    state.repoLinked = {
+      projectId: payload.variables.projectId,
+      repositoryId: payload.variables.repositoryId,
+    }
+    writeState(state)
+    respond(JSON.stringify({ data: { linkProjectV2ToRepository: { repository: { id: payload.variables.repositoryId } } } }))
     process.exit(0)
   }
 
@@ -870,6 +921,13 @@ function testNonInteractiveTokenFromEnv() {
   // stub gh가 인증을 처리하므로 setup이 진행됨
   assertOk('GITHUB_TOKEN env is accepted in non-interactive mode',
     result.stdout.includes('Authenticated as stubuser') || result.stdout.includes('Setup complete'))
+
+  // linkProjectV2ToRepository 호출 검증
+  const ghState = JSON.parse(readFileSync(env.ghStatePath, 'utf-8'))
+  assertOk('setup links repository to project',
+    ghState.repoLinked != null && ghState.repoLinked.projectId === 'PVT_project' && ghState.repoLinked.repositoryId === 'R_repo123')
+  assertOk('setup output confirms repo linked',
+    result.stdout.includes('Repository linked to project'))
 }
 
 function testNonInteractiveReinstallAutoApproves() {
