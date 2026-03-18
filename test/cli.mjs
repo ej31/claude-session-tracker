@@ -59,12 +59,16 @@ if (args[0] === 'api' && args[1] && args[1].startsWith('repos/')) {
   process.exit(0)
 }
 
+if (args[0] === 'repo' && args[1] === 'create') {
+  process.exit(0)
+}
+
 if (args[0] === 'project' && args[1] === 'create') {
   process.exit(0)
 }
 
 if (args[0] === 'project' && args[1] === 'list') {
-  respond(JSON.stringify({ projects: [{ title: 'Claude Session Tracker', number: 1 }] }))
+  respond(JSON.stringify({ projects: [{ title: "stubuser's Claude Session Storage", number: 1 }] }))
   process.exit(0)
 }
 
@@ -217,6 +221,38 @@ if (args[0] === 'api' && args[1] === 'graphql') {
           }]
         : []
     respond(JSON.stringify({ data: { node: { statusUpdates: { nodes } } } }))
+    process.exit(0)
+  }
+
+  if (query.includes('updateProjectV2Field(input:')) {
+    respond(JSON.stringify({
+      data: {
+        updateProjectV2Field: {
+          projectV2Field: {
+            options: [
+              { id: 'opt_reg', name: 'Registered' },
+              { id: 'opt_resp', name: 'Responding' },
+              { id: 'opt_wait', name: 'Waiting' },
+              { id: 'opt_closed', name: 'Closed' },
+            ],
+          },
+        },
+      },
+    }))
+    process.exit(0)
+  }
+
+  if (query.includes('createProjectV2Field(input:')) {
+    respond(JSON.stringify({
+      data: {
+        createProjectV2Field: {
+          projectV2Field: {
+            id: 'PF_' + (payload.variables.name || '').replace(/\\s/g, '_'),
+            name: payload.variables.name,
+          },
+        },
+      },
+    }))
     process.exit(0)
   }
 
