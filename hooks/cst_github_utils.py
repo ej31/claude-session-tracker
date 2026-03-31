@@ -441,26 +441,6 @@ def update_issue_title(repo: str, issue_number: int, title: str) -> None:
     _log.debug(f"제목 업데이트 완료: {repo}#{issue_number} → {title}")
 
 
-def lock_issue(repo: str, issue_number: int) -> None:
-    """GitHub Issue를 lock 처리하여 외부 댓글을 차단한다"""
-    _log = setup_logger("lock-issue")
-    result = subprocess.run(
-        [
-            _gh(), "api",
-            f"repos/{repo}/issues/{issue_number}/lock",
-            "--method", "PUT",
-            "--input", "-",
-        ],
-        input="{}",
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Issue lock 실패: {result.stderr.strip()}")
-    _log.info(f"Issue lock 완료: {repo}#{issue_number}")
-
-
 def close_issue(repo: str, issue_number: int) -> None:
     """GitHub Issue를 close 처리"""
     _log = setup_logger("close-issue")

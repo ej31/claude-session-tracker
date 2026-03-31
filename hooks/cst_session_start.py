@@ -30,7 +30,6 @@ from cst_github_utils import (
     is_resume,
     load_env_file,
     load_state,
-    lock_issue,
     save_runtime_status,
     save_state,
     set_item_date_field,
@@ -210,12 +209,6 @@ def main() -> int:
             body,
             labels=[context_repo] if add_context_label else None,
         )
-
-        # Issue 생성 직후 lock (외부 댓글 차단, owner는 여전히 쓰기 가능)
-        try:
-            lock_issue(notes_repo, issue_number)
-        except Exception as e:
-            logger.error(f"Issue lock 실패 (계속 진행): {e}")
 
         set_item_status(item_id, "registered")
 
