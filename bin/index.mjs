@@ -427,14 +427,17 @@ function getSettingsPaths(cwd = process.cwd()) {
   ]
 }
 
+// settings.json hook 항목이 이 도구가 등록한 것인지 판별 (command에 우리 파일명이 포함되는지 검사)
+function isOurHookEntry(entry) {
+  const hooks = entry?.hooks ?? []
+  return hooks.some(hook => ALL_KNOWN_FILES.some(file => hook.command?.includes(file)))
+}
+
 function hasTrackerHooks(settings) {
   if (!settings?.hooks) return false
   return OUR_HOOK_KEYS.some((key) => {
     const entries = settings.hooks[key]
-    return Array.isArray(entries) && entries.some(entry => {
-      const hooks = entry.hooks ?? []
-      return hooks.some(hook => ALL_KNOWN_FILES.some(file => hook.command?.includes(file)))
-    })
+    return Array.isArray(entries) && entries.some(isOurHookEntry)
   })
 }
 
@@ -891,29 +894,33 @@ function archiveRepo(repoFullName) {
 }
 
 function mergeHooks(existing, hooksDir) {
-  return {
-    ...existing,
-    hooks: {
-      ...(existing.hooks ?? {}),
-      SessionStart: [{
-        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_session_start.py')}`, timeout: 15, async: true }],
-      }],
-      UserPromptSubmit: [{
-        matcher: '',
-        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_prompt_to_github_projects.py')}`, timeout: 15, async: true }],
-      }],
-      PostToolUse: [{
-        matcher: 'AskUserQuestion',
-        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_post_tool_use.py')}`, timeout: 15, async: true }],
-      }],
-      Stop: [{
-        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_session_stop.py')}`, timeout: 10, async: true }],
-      }],
-      SessionEnd: [{
-        hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_session_end.py')}`, timeout: 10, async: true }],
-      }],
+  const ourEntries = {
+    SessionStart: {
+      hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_session_start.py')}`, timeout: 15, async: true }],
+    },
+    UserPromptSubmit: {
+      matcher: '',
+      hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_prompt_to_github_projects.py')}`, timeout: 15, async: true }],
+    },
+    PostToolUse: {
+      matcher: 'AskUserQuestion',
+      hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_post_tool_use.py')}`, timeout: 15, async: true }],
+    },
+    Stop: {
+      hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_session_stop.py')}`, timeout: 10, async: true }],
+    },
+    SessionEnd: {
+      hooks: [{ type: 'command', command: `python3 ${join(hooksDir, 'cst_session_end.py')}`, timeout: 10, async: true }],
     },
   }
+  // 이벤트 배열을 통째로 교체하면 같은 이벤트에 등록된 서드파티 hook이 삭제되므로,
+  // 기존 배열에서 우리 항목만 걸러낸 뒤 새 항목을 덧붙여 병합한다 (재실행 시 멱등)
+  const mergedHooks = { ...(existing.hooks ?? {}) }
+  for (const [key, entry] of Object.entries(ourEntries)) {
+    const others = (mergedHooks[key] ?? []).filter(e => !isOurHookEntry(e))
+    mergedHooks[key] = [...others, entry]
+  }
+  return { ...existing, hooks: mergedHooks }
 }
 
 function removeOurHooks(settings) {
@@ -922,10 +929,7 @@ function removeOurHooks(settings) {
   for (const key of OUR_HOOK_KEYS) {
     const entries = cleaned.hooks[key]
     if (!Array.isArray(entries)) continue
-    cleaned.hooks[key] = entries.filter((entry) => {
-      const hooks = entry.hooks ?? []
-      return !hooks.some(hook => ALL_KNOWN_FILES.some(file => hook.command?.includes(file)))
-    })
+    cleaned.hooks[key] = entries.filter(entry => !isOurHookEntry(entry))
     if (cleaned.hooks[key].length === 0) delete cleaned.hooks[key]
   }
   if (Object.keys(cleaned.hooks).length === 0) delete cleaned.hooks
