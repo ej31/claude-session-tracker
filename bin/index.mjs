@@ -168,9 +168,7 @@ function validateResolvedToken(token) {
   }
 
   // scope 검증 (project, repo 필요)
-  const scopeCheck = spawnSync('gh', ['auth', 'status'], { encoding: 'utf-8', env })
-  const scopeOutput = (scopeCheck.stdout ?? '') + (scopeCheck.stderr ?? '')
-  if (!scopeOutput.includes('project') || !scopeOutput.includes('repo')) {
+  if (!hasProjectAndRepoScopes(env)) {
     return {
       valid: false,
       username: result.stdout.trim(),
@@ -597,10 +595,27 @@ function buildRepoReadme() {
   ].join('\n')
 }
 
-function hasRequiredScopes() {
-  const result = spawnSync('gh', ['auth', 'status'], { encoding: 'utf-8' })
-  const output = result.stdout + result.stderr
+// 토큰의 OAuth scope 목록을 API 응답 헤더(X-Oauth-Scopes)에서 파싱한다.
+// fine-grained PAT처럼 헤더가 없는 토큰은 null을 반환한다.
+function getTokenScopes(env = process.env) {
+  const result = spawnSync('gh', ['api', 'user', '--include'], { encoding: 'utf-8', env })
+  if (result.status !== 0) return null
+  const match = (result.stdout ?? '').match(/^x-oauth-scopes:\s*(.+)$/im)
+  if (!match || !match[1].trim()) return null
+  return match[1].split(',').map(s => s.trim()).filter(Boolean)
+}
+
+function hasProjectAndRepoScopes(env = process.env) {
+  const scopes = getTokenScopes(env)
+  if (scopes) return scopes.includes('project') && scopes.includes('repo')
+  // 헤더가 없는 토큰은 gh auth status 출력 문자열 휴리스틱으로 폴백
+  const result = spawnSync('gh', ['auth', 'status'], { encoding: 'utf-8', env })
+  const output = (result.stdout ?? '') + (result.stderr ?? '')
   return output.includes('project') && output.includes('repo')
+}
+
+function hasRequiredScopes() {
+  return hasProjectAndRepoScopes()
 }
 
 // 외부 sleep 바이너리는 Windows에 없으므로 플랫폼 독립적인 동기 대기를 사용한다

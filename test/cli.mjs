@@ -46,6 +46,10 @@ if (args[0] === 'auth' && args[1] === 'status') {
 }
 
 if (args[0] === 'api' && args[1] === 'user') {
+  if (args.includes('--include')) {
+    respond('HTTP/2.0 200 OK\\nX-Oauth-Scopes: project, repo\\n\\n{"login":"stubuser"}\\n')
+    process.exit(0)
+  }
   respond('stubuser\\n')
   process.exit(0)
 }
