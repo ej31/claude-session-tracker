@@ -52,7 +52,18 @@ if (args[0] === 'api' && args[1] === 'user') {
 
 if (args[0] === 'api' && args[1] && args[1].startsWith('repos/')) {
   if (args.includes('POST') && args[1].endsWith('/issues')) {
+    const state = readState()
+    state.createdIssues = state.createdIssues || []
+    state.createdIssues.push({ path: args[1] })
+    writeState(state)
     respond('"I_node123"\\n42\\n')
+    process.exit(0)
+  }
+  if (args.includes('PATCH')) {
+    const state = readState()
+    state.titleUpdates = state.titleUpdates || []
+    state.titleUpdates.push({ path: args[1] })
+    writeState(state)
     process.exit(0)
   }
   respond((process.env.GH_STUB_REPO_PRIVATE ?? 'true') + '\\n')
@@ -85,6 +96,10 @@ if (args[0] === 'issue' && args[1] === 'close') {
 }
 
 if (args[0] === 'issue' && args[1] === 'comment') {
+  const state = readState()
+  state.comments = state.comments || []
+  state.comments.push({ number: args[2] })
+  writeState(state)
   process.exit(0)
 }
 
@@ -338,6 +353,7 @@ function writeTrackerInstall({ home, hooksDir, workspace, notesRepo = 'tester/pr
 
   for (const file of [
     'cst_github_utils.py',
+    'cst_hash_chain.py',
     'cst_session_start.py',
     'cst_prompt_to_github_projects.py',
     'cst_session_stop.py',
@@ -377,8 +393,8 @@ function runNode(args, { cwd, home, binDir, ghStatePath, extraEnv = {} }) {
   })
 }
 
-function runPythonHook({ cwd, home, binDir, ghStatePath, stdin, extraEnv = {} }) {
-  return spawnSync('python3', [sessionStartPath], {
+function runPythonHook({ cwd, home, binDir, ghStatePath, stdin, extraEnv = {}, scriptPath = sessionStartPath }) {
+  return spawnSync('python3', [scriptPath], {
     cwd,
     encoding: 'utf-8',
     input: stdin,
@@ -960,6 +976,167 @@ function testExistingCommandsStillWork() {
   assertOk('doctor command still works with parseArgs', doctorResult.status === 0 || doctorResult.status === 1)
 }
 
+function testInstalledHooksImportCleanly() {
+  const env = createTestEnv()
+  // 실제 설치 플로우로 temp HOME에 설치한 뒤 "설치된 디렉터리"에서 import를 검증한다.
+  // repo 체크아웃에서 실행하면 누락된 파일도 옆에 있어 패키징 누락을 잡지 못한다.
+  const install = runNode(['--yes', '--language', 'en'], {
+    ...env,
+    cwd: env.workspace,
+    extraEnv: { GITHUB_TOKEN: 'ghp_test_token' },
+  })
+  assertOk('setup completes for install-path test', install.status === 0)
+  assertOk('installer ships cst_hash_chain.py', existsSync(join(env.hooksDir, 'cst_hash_chain.py')))
+
+  for (const file of [
+    'cst_github_utils.py',
+    'cst_hash_chain.py',
+    'cst_session_start.py',
+    'cst_prompt_to_github_projects.py',
+    'cst_session_stop.py',
+    'cst_mark_done.py',
+    'cst_post_tool_use.py',
+    'cst_session_end.py',
+  ]) {
+    const mod = file.replace(/\.py$/, '')
+    const result = spawnSync('python3', [
+      '-c',
+      `import sys; sys.path.insert(0, ${JSON.stringify(env.hooksDir)}); import ${mod}`,
+    ], { encoding: 'utf-8', env: { ...process.env, HOME: env.home } })
+    assertOk(`installed ${file} imports cleanly`, result.status === 0 && !result.stderr.includes('ModuleNotFoundError'))
+  }
+
+  const run = runPythonHook({
+    ...env,
+    cwd: env.workspace,
+    stdin: '{}',
+    scriptPath: join(env.hooksDir, 'cst_session_start.py'),
+  })
+  assertOk('installed session_start runs from installed dir', run.status === 0 && !(run.stderr || '').includes('Traceback'))
+}
+
+function testResumeReusesItemViaSourceField() {
+  const env = createTestEnv()
+  writeTrackerInstall(env)
+  writeFileSync(join(env.stateDir, 'old-session.json'), JSON.stringify({
+    session_id: 'old-session',
+    cwd: env.workspace,
+    repo: 'tester/private-notes',
+    issue_number: 42,
+    item_id: 'ITEM_OLD',
+    status: 'waiting',
+  }, null, 2))
+  // 현행 transcript 첫 줄은 type: mode — 레거시 스니핑으로는 resume을 감지할 수 없는 상황
+  const transcriptPath = join(env.root, 'transcript-resume.jsonl')
+  writeFileSync(transcriptPath, JSON.stringify({ type: 'mode' }) + '\n')
+
+  const result = runPythonHook({
+    ...env,
+    cwd: env.workspace,
+    stdin: JSON.stringify({
+      session_id: 'resumed-session',
+      cwd: env.workspace,
+      transcript_path: transcriptPath,
+      source: 'resume',
+    }),
+  })
+
+  assert.equal(result.status, 0)
+  assertOk('resume reuses existing item via source field', result.stdout.includes('(resumed)'))
+  const newState = JSON.parse(readFileSync(join(env.stateDir, 'resumed-session.json'), 'utf-8'))
+  assertOk('resume keeps existing item id', newState.item_id === 'ITEM_OLD')
+  const ghState = JSON.parse(readFileSync(env.ghStatePath, 'utf-8'))
+  assertOk('resume does not create a new issue', !(ghState.createdIssues?.length))
+}
+
+function testStartupSourceIgnoresLegacyMarker() {
+  const env = createTestEnv()
+  writeTrackerInstall(env)
+  // 레거시 마커가 있어도 source=startup이면 신규 세션으로 처리해야 한다 (source 우선)
+  const transcriptPath = join(env.root, 'transcript-startup.jsonl')
+  writeFileSync(transcriptPath, JSON.stringify({ type: 'file-history-snapshot' }) + '\n')
+
+  const result = runPythonHook({
+    ...env,
+    cwd: env.workspace,
+    stdin: JSON.stringify({
+      session_id: 'fresh-session',
+      cwd: env.workspace,
+      transcript_path: transcriptPath,
+      source: 'startup',
+    }),
+  })
+
+  assert.equal(result.status, 0)
+  const ghState = JSON.parse(readFileSync(env.ghStatePath, 'utf-8'))
+  assertOk('startup source creates a new issue despite legacy marker', (ghState.createdIssues?.length ?? 0) === 1)
+}
+
+function testTaskNotificationPromptSkipped() {
+  const env = createTestEnv()
+  writeTrackerInstall(env)
+  const statePath = join(env.stateDir, 'session-sys-turn.json')
+  writeFileSync(statePath, JSON.stringify({
+    session_id: 'session-sys-turn',
+    cwd: env.workspace,
+    repo: 'tester/private-notes',
+    issue_number: 7,
+    item_id: 'ITEM_7',
+    status: 'waiting',
+    first_prompt_notified: true,
+  }, null, 2))
+
+  const result = runPythonHook({
+    ...env,
+    cwd: env.workspace,
+    scriptPath: join(repoRoot, 'hooks', 'cst_prompt_to_github_projects.py'),
+    stdin: JSON.stringify({
+      session_id: 'session-sys-turn',
+      prompt: '<task-notification>\n<task-id>abc</task-id>\n</task-notification>',
+    }),
+  })
+
+  assert.equal(result.status, 0)
+  const ghState = JSON.parse(readFileSync(env.ghStatePath, 'utf-8'))
+  assertOk('system turn does not update issue title', !(ghState.titleUpdates?.length))
+  assertOk('system turn does not add prompt comment', !(ghState.comments?.length))
+  const state = JSON.parse(readFileSync(statePath, 'utf-8'))
+  assertOk('system turn still flips status to responding', state.status === 'responding')
+}
+
+function testMergePreservesThirdPartyHooks() {
+  const env = createTestEnv()
+  mkdirSync(join(env.home, '.claude'), { recursive: true })
+  writeFileSync(join(env.home, '.claude', 'settings.json'), JSON.stringify({
+    hooks: {
+      SessionStart: [{
+        hooks: [{ type: 'command', command: 'python3 /opt/other-tool/hook.py' }],
+      }],
+    },
+  }, null, 2))
+
+  // 두 번 설치해 서드파티 hook 보존과 멱등성을 함께 검증
+  for (let i = 0; i < 2; i++) {
+    runNode(['--yes', '--language', 'en'], {
+      ...env,
+      cwd: env.workspace,
+      extraEnv: { GITHUB_TOKEN: 'ghp_test_token' },
+    })
+  }
+
+  const settings = JSON.parse(readFileSync(join(env.home, '.claude', 'settings.json'), 'utf-8'))
+  const sessionStart = settings.hooks.SessionStart ?? []
+  const thirdParty = sessionStart.filter(e => (e.hooks ?? []).some(h => h.command?.includes('other-tool')))
+  const ours = sessionStart.filter(e => (e.hooks ?? []).some(h => h.command?.includes('cst_session_start.py')))
+  assertOk('third-party SessionStart hook survives reinstall', thirdParty.length === 1)
+  assertOk('exactly one CST SessionStart entry after two installs', ours.length === 1)
+  for (const key of ['UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionEnd']) {
+    const entries = settings.hooks[key] ?? []
+    const cst = entries.filter(e => (e.hooks ?? []).some(h => (h.command || '').includes('cst_')))
+    assertOk(`exactly one CST ${key} entry after two installs`, cst.length === 1)
+  }
+}
+
 console.log('\n[cli]')
 testStatusOutput()
 testDoctorPublicRepoFailure()
@@ -983,6 +1160,13 @@ testNonInteractiveDetectsCI()
 testNonInteractiveTokenFromEnv()
 testNonInteractiveReinstallAutoApproves()
 testExistingCommandsStillWork()
+
+console.log('\n[regression]')
+testInstalledHooksImportCleanly()
+testResumeReusesItemViaSourceField()
+testStartupSourceIgnoresLegacyMarker()
+testTaskNotificationPromptSkipped()
+testMergePreservesThirdPartyHooks()
 
 console.log(`\n${pass} passed, ${fail} failed\n`)
 if (fail > 0) process.exit(1)

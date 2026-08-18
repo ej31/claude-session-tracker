@@ -23,11 +23,12 @@ from cst_github_utils import (
     check_project_board_status,
     cleanup_stale_sessions,
     cancel_timer,
+    clear_runtime_status,
     create_repo_issue_and_add_to_project,
     find_active_state_by_cwd,
     get_context_repo,
     is_repo_private,
-    is_resume,
+    is_resume_session,
     load_env_file,
     load_state,
     save_runtime_status,
@@ -77,6 +78,8 @@ def main() -> int:
     session_id = input_data.get("session_id", "")
     cwd = input_data.get("cwd", "")
     transcript_path = input_data.get("transcript_path", "")
+    # SessionStart payload의 source: startup | resume | clear | compact | fork
+    source = input_data.get("source", "")
 
     if not session_id:
         return 0
@@ -146,8 +149,8 @@ def main() -> int:
         logger.info(f"이미 등록된 세션: {session_id[:8]}…")
         return 0
 
-    # resume 감지: 기존 item 재활성화
-    if is_resume(transcript_path):
+    # resume 감지: 기존 item 재활성화 (source 필드 우선, 구버전은 transcript 폴백)
+    if is_resume_session(source, transcript_path):
         result = find_active_state_by_cwd(cwd)
         if result:
             old_state, old_session_id = result

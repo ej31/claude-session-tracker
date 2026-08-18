@@ -33,6 +33,22 @@ from cst_hash_chain import GENESIS_HASH, stamp_comment
 
 logger = setup_logger("prompt-to-github")
 
+# 시스템이 생성한 턴(백그라운드 에이전트 알림 등)의 선두 마커.
+# 이슈 제목은 "마지막 사용자 입력 프롬프트"여야 하므로(설계 의도)
+# 이런 턴은 제목/댓글 기록에서 제외한다. 상태·Last Active 갱신은 유지.
+_SYSTEM_PROMPT_MARKERS = (
+    "<task-notification>",
+    "<system-reminder>",
+    "<local-command-stdout>",
+    "<command-name>",
+    "[SYSTEM NOTIFICATION",
+)
+
+
+def _is_system_generated(prompt: str) -> bool:
+    """사용자가 직접 입력하지 않은 시스템 생성 턴인지 판별"""
+    return prompt.lstrip().startswith(_SYSTEM_PROMPT_MARKERS)
+
 
 def main() -> int:
     load_env_file()
@@ -45,6 +61,9 @@ def main() -> int:
 
     session_id = input_data.get("session_id", "unknown")
     prompt_text = input_data.get("prompt", "").strip()
+    is_system_turn = _is_system_generated(prompt_text)
+    if is_system_turn:
+        logger.info(f"시스템 생성 턴 감지 → 제목/댓글 기록 생략: {session_id[:8]}…")
 
     # SessionStart(async)가 아직 완료되지 않았을 수 있으므로 재시도
     # timeout 15초 내에서 점진적 백오프로 대기 (0.5 → 1 → 1.5 → 2 …)
@@ -117,10 +136,10 @@ def main() -> int:
         except Exception as e:
             logger.error(f"Last Active 필드 갱신 실패: {e}")
 
-    # 최신 프롬프트를 이슈 제목으로 업데이트
+    # 최신 프롬프트를 이슈 제목으로 업데이트 (시스템 생성 턴은 제외)
     repo = state.get("repo")
     issue_number = state.get("issue_number")
-    if repo and issue_number and prompt_text:
+    if repo and issue_number and prompt_text and not is_system_turn:
         try:
             project_name_mode = _project_name_mode()
             context_repo = state.get("context_repo") or state.get("context_label")
@@ -143,7 +162,7 @@ def main() -> int:
         except Exception as e:
             logger.error(f"이슈 제목 업데이트 실패: {e}")
 
-    if repo and issue_number and _project_name_mode() == "label":
+    if repo and issue_number and _project_name_mode() == "label" and not is_system_turn:
         try:
             context_repo = state.get("context_repo") or state.get("context_label")
             if not context_repo:
@@ -158,8 +177,8 @@ def main() -> int:
         except Exception as e:
             logger.error(f"컨텍스트 라벨 보정 실패: {e}")
 
-    # 프롬프트를 이슈 댓글로 저장 (hash chain 포함)
-    if repo and issue_number and prompt_text:
+    # 프롬프트를 이슈 댓글로 저장 (hash chain 포함, 시스템 생성 턴은 제외)
+    if repo and issue_number and prompt_text and not is_system_turn:
         try:
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

@@ -638,13 +638,33 @@ def _normalize_cwd(cwd: str) -> str:
         return cwd
 
 
+# resume 판정에 사용하는 SessionStart source 값 (compact도 기존 세션 연속으로 취급)
+_RESUME_SOURCES = ("resume", "compact")
+
+
 def is_resume(transcript_path: str) -> bool:
+    """[레거시] transcript 첫 줄 스니핑 기반 resume 감지.
+
+    Claude Code 내부 포맷에 의존하는 방식이라 source 필드가 없는
+    구버전 payload에서만 폴백으로 사용한다.
+    """
     try:
         with open(transcript_path, encoding="utf-8") as f:
             first = json.loads(f.readline())
         return first.get("type") == "file-history-snapshot"
     except Exception:
         return False
+
+
+def is_resume_session(source: str, transcript_path: str) -> bool:
+    """SessionStart payload의 source 필드 기반 resume 감지.
+
+    source가 있으면 공식 문서 값(startup/resume/clear/compact/fork)을 신뢰하고,
+    없으면(구버전 Claude Code) 레거시 transcript 스니핑으로 폴백한다.
+    """
+    if source:
+        return source in _RESUME_SOURCES
+    return is_resume(transcript_path)
 
 
 def cleanup_stale_sessions(logger: logging.Logger) -> int:
