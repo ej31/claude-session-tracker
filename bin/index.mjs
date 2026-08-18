@@ -50,6 +50,7 @@ const AUTO_SETUP_STEPS = [
 ]
 const PY_FILES = [
   'cst_github_utils.py',
+  'cst_hash_chain.py',
   'cst_session_start.py',
   'cst_prompt_to_github_projects.py',
   'cst_session_stop.py',
