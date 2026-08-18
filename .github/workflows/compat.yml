@@ -20,11 +20,24 @@ jobs:
         with:
           node-version: '20'
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
       - name: Install dependencies
         run: npm ci
 
-      - name: Run unit tests
-        run: node test/compat.mjs
+      # cli.mjs는 unix 셸/PATH 전제라 windows에서는 compat + py_compile만 실행한다
+      - name: Run full test suite
+        if: runner.os != 'Windows'
+        run: npm test
+
+      - name: Run unit tests (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          node test/compat.mjs
+          python -m py_compile hooks/cst_github_utils.py hooks/cst_hash_chain.py hooks/cst_session_start.py hooks/cst_prompt_to_github_projects.py hooks/cst_session_stop.py hooks/cst_mark_done.py hooks/cst_post_tool_use.py hooks/cst_session_end.py
+        shell: bash
 
       - name: Pack and install globally
         run: |
@@ -38,6 +51,17 @@ jobs:
 
       - name: Verify doctor subcommand
         run: claude-session-tracker doctor 2>&1 || true
+        shell: bash
+
+      # 패키징 누락(설치 목록에서 빠진 hook 파일 등)을 tarball 기준으로 검증한다
+      - name: Verify packaged hooks import cleanly
+        if: runner.os != 'Windows'
+        run: |
+          PKG_DIR=$(mktemp -d)
+          tar xzf claude-session-tracker-*.tgz -C "$PKG_DIR"
+          for f in "$PKG_DIR"/package/hooks/cst_*.py; do
+            python3 -c "import sys; sys.path.insert(0, '$PKG_DIR/package/hooks'); import $(basename "$f" .py)"
+          done
         shell: bash
 
       - name: Verify npx execution
