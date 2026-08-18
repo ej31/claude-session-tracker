@@ -23,6 +23,7 @@ from cst_github_utils import (
     check_project_board_status,
     cleanup_stale_sessions,
     cancel_timer,
+    clear_runtime_status,
     create_repo_issue_and_add_to_project,
     find_active_state_by_cwd,
     get_context_repo,
