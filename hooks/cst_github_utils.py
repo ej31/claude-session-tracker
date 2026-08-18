@@ -424,7 +424,7 @@ def update_issue_title(repo: str, issue_number: int, title: str) -> None:
     _log = setup_logger("update-title")
     result = subprocess.run(
         [
-            "gh",
+            _gh(),
             "api",
             f"repos/{repo}/issues/{issue_number}",
             "--method",
@@ -491,7 +491,7 @@ def create_repo_issue_and_add_to_project(
 
     result = subprocess.run(
         [
-            "gh",
+            _gh(),
             "api",
             f"repos/{repo}/issues",
             "--method",
@@ -573,7 +573,7 @@ def ensure_label(repo: str, label: str) -> None:
             return
     subprocess.run(
         [
-            "gh",
+            _gh(),
             "label",
             "create",
             label,
