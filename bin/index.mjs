@@ -603,6 +603,11 @@ function hasRequiredScopes() {
   return output.includes('project') && output.includes('repo')
 }
 
+// 외부 sleep 바이너리는 Windows에 없으므로 플랫폼 독립적인 동기 대기를 사용한다
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
 function openBrowser(url) {
   if (process.platform === 'darwin') {
     spawnSync('open', [url])
@@ -1980,7 +1985,7 @@ async function autoSetup(username, flags = {}) {
           if (created) break
           if (attempt < MAX_RETRIES) {
             projectSpin.message(`Waiting for project to appear (attempt ${attempt}/${MAX_RETRIES})...`)
-            spawnSync('sleep', [String(RETRY_DELAY_MS / 1000)])
+            sleepSync(RETRY_DELAY_MS)
           }
         }
         if (!created) throw new Error('Project was created but could not be found in project list after multiple retries.')
