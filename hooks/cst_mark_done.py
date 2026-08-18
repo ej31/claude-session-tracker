@@ -24,11 +24,20 @@ from cst_github_utils import (
 )
 
 LOG_FILE = Path("~/.claude/hooks/mark_done.log").expanduser()
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s [mark_done] %(levelname)s: %(message)s",
-)
+# 로그 디렉토리가 없거나 쓸 수 없어도 타이머 프로세스가 죽으면 안 되므로
+# 파일 로깅 실패 시 stderr 전용으로 폴백한다
+try:
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        filename=LOG_FILE,
+        level=logging.INFO,
+        format="%(asctime)s [mark_done] %(levelname)s: %(message)s",
+    )
+except OSError:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [mark_done] %(levelname)s: %(message)s",
+    )
 logger = logging.getLogger(__name__)
 
 
