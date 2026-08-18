@@ -35,6 +35,39 @@ logger = setup_logger("session-stop")
 MARK_DONE_SCRIPT = str(Path(__file__).parent / "cst_mark_done.py")
 
 
+def _last_assistant_from_transcript(transcript_path: str) -> str:
+    """transcript에서 마지막 assistant 메시지 텍스트를 추출한다.
+
+    Stop payload의 last_assistant_message는 공식 문서에 없는 필드라
+    사라질 수 있으므로, 비어 있을 때의 폴백으로만 사용한다.
+    """
+    if not transcript_path:
+        return ""
+    try:
+        lines = Path(transcript_path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("type") != "assistant":
+            continue
+        content = entry.get("message", {}).get("content", [])
+        if not isinstance(content, list):
+            continue
+        texts = [
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        joined = "\n".join(t for t in texts if t).strip()
+        if joined:
+            return joined
+    return ""
+
+
 def main() -> int:
     load_env_file()
 
@@ -107,6 +140,11 @@ def main() -> int:
 
     # 답변을 이슈 댓글로 저장 (hash chain 포함)
     last_message = input_data.get("last_assistant_message", "").strip()
+    if not last_message:
+        logger.warning("Stop payload에 last_assistant_message 없음 — transcript 폴백 시도")
+        last_message = _last_assistant_from_transcript(
+            input_data.get("transcript_path", "")
+        )
     repo = state.get("repo")
     issue_number = state.get("issue_number")
     if repo and issue_number and last_message:
