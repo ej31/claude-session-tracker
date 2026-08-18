@@ -83,9 +83,15 @@ def setup_logger(name: str) -> logging.Logger:
 
     fmt = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 
-    fh = logging.FileHandler(LOG_FILE)
-    fh.setFormatter(fmt)
-    logger.addHandler(fh)
+    # 로그 디렉토리가 없거나 쓸 수 없어도 hook 전체가 죽으면 안 되므로
+    # 파일 로깅 실패 시 stderr 전용으로 폴백한다
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(LOG_FILE)
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
+    except OSError:
+        pass
 
     sh = logging.StreamHandler(sys.stderr)
     sh.setFormatter(logging.Formatter(f"[{name}] %(levelname)s: %(message)s"))
@@ -424,7 +430,7 @@ def update_issue_title(repo: str, issue_number: int, title: str) -> None:
     _log = setup_logger("update-title")
     result = subprocess.run(
         [
-            "gh",
+            _gh(),
             "api",
             f"repos/{repo}/issues/{issue_number}",
             "--method",
@@ -491,7 +497,7 @@ def create_repo_issue_and_add_to_project(
 
     result = subprocess.run(
         [
-            "gh",
+            _gh(),
             "api",
             f"repos/{repo}/issues",
             "--method",
@@ -573,7 +579,7 @@ def ensure_label(repo: str, label: str) -> None:
             return
     subprocess.run(
         [
-            "gh",
+            _gh(),
             "label",
             "create",
             label,

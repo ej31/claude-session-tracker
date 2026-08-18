@@ -46,6 +46,10 @@ if (args[0] === 'auth' && args[1] === 'status') {
 }
 
 if (args[0] === 'api' && args[1] === 'user') {
+  if (args.includes('--include')) {
+    respond('HTTP/2.0 200 OK\\nX-Oauth-Scopes: project, repo\\n\\n{"login":"stubuser"}\\n')
+    process.exit(0)
+  }
   respond('stubuser\\n')
   process.exit(0)
 }
@@ -1137,6 +1141,42 @@ function testMergePreservesThirdPartyHooks() {
   }
 }
 
+function testStopFallsBackToTranscript() {
+  const env = createTestEnv()
+  writeTrackerInstall(env)
+  const statePath = join(env.stateDir, 'session-stop-fb.json')
+  writeFileSync(statePath, JSON.stringify({
+    session_id: 'session-stop-fb',
+    cwd: env.workspace,
+    repo: 'tester/private-notes',
+    issue_number: 9,
+    item_id: 'ITEM_9',
+    status: 'responding',
+  }, null, 2))
+  const transcriptPath = join(env.root, 'transcript-stop.jsonl')
+  writeFileSync(transcriptPath, [
+    JSON.stringify({ type: 'mode' }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'fallback answer' }] } }),
+  ].join('\n') + '\n')
+
+  // last_assistant_message가 payload에 없어도 transcript에서 응답을 복원해야 한다
+  const result = runPythonHook({
+    ...env,
+    cwd: env.workspace,
+    scriptPath: join(repoRoot, 'hooks', 'cst_session_stop.py'),
+    stdin: JSON.stringify({
+      session_id: 'session-stop-fb',
+      transcript_path: transcriptPath,
+    }),
+    extraEnv: { DONE_TIMEOUT_SECS: '1' },
+  })
+
+  assert.equal(result.status, 0)
+  assertOk('stop hook warns about missing last_assistant_message', (result.stderr || '').includes('last_assistant_message'))
+  const ghState = JSON.parse(readFileSync(env.ghStatePath, 'utf-8'))
+  assertOk('stop hook saves response comment via transcript fallback', (ghState.comments?.length ?? 0) === 1)
+}
+
 console.log('\n[cli]')
 testStatusOutput()
 testDoctorPublicRepoFailure()
@@ -1167,6 +1207,7 @@ testResumeReusesItemViaSourceField()
 testStartupSourceIgnoresLegacyMarker()
 testTaskNotificationPromptSkipped()
 testMergePreservesThirdPartyHooks()
+testStopFallsBackToTranscript()
 
 console.log(`\n${pass} passed, ${fail} failed\n`)
 if (fail > 0) process.exit(1)
