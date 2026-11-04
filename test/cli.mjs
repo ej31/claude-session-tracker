@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,6 +20,8 @@ const OLD_CLI_PY_FILES = [
   'cst_post_tool_use.py',
   'cst_session_end.py',
 ]
+const STUB_LATEST_VERSION = '9.9.9'
+const STUB_OLDER_VERSION = '9.9.8'
 
 let pass = 0
 let fail = 0
@@ -1010,6 +1012,102 @@ function testHooksRunWithOldCliFileSet() {
   }
 }
 
+function createNpmStub(binDir) {
+  makeExecutable(join(binDir, 'npm'), `#!/usr/bin/env node
+const { copyFileSync } = require('node:fs')
+const { basename, join } = require('node:path')
+const args = process.argv.slice(2)
+if (args[0] === 'view') {
+  process.stdout.write(process.env.NPM_STUB_VERSION + '\\n')
+  process.exit(0)
+}
+if (args[0] === 'pack') {
+  const destination = args[args.indexOf('--pack-destination') + 1]
+  const tarball = process.env.NPM_STUB_TARBALL
+  copyFileSync(tarball, join(destination, basename(tarball)))
+  process.stdout.write(basename(tarball) + '\\n')
+  process.exit(0)
+}
+process.exit(1)
+`)
+}
+
+function buildPackageTarball(root, hookFiles, extra = () => {}) {
+  const packageRoot = join(root, 'pkg')
+  const packageHooksDir = join(packageRoot, 'package', 'hooks')
+  mkdirSync(packageHooksDir, { recursive: true })
+  writeFileSync(join(packageRoot, 'package', 'package.json'), '{}\n')
+  for (const file of hookFiles) {
+    writeFileSync(join(packageHooksDir, file), '# packaged\n')
+  }
+  extra(packageHooksDir)
+
+  const tarball = join(root, `claude-session-tracker-${STUB_LATEST_VERSION}.tgz`)
+  const packed = spawnSync('tar', ['czf', tarball, '-C', packageRoot, 'package'], { encoding: 'utf-8' })
+  assert.equal(packed.status, 0, packed.stderr)
+  return tarball
+}
+
+function prepareUpdateEnv(installedVersion, hookFiles, extra) {
+  const env = createTestEnv()
+  writeTrackerInstall(env)
+  appendFileSync(join(env.hooksDir, 'config.env'), `CST_VERSION=${installedVersion}\n`)
+  createNpmStub(env.binDir)
+  const tarball = buildPackageTarball(env.root, hookFiles, extra)
+  const run = () => runNode(['update', '--yes'], {
+    ...env,
+    cwd: env.workspace,
+    extraEnv: { NPM_STUB_VERSION: STUB_LATEST_VERSION, NPM_STUB_TARBALL: tarball },
+  })
+  return { env, run }
+}
+
+const readInstalledVersion = (hooksDir) => (
+  readFileSync(join(hooksDir, 'config.env'), 'utf-8').match(/^CST_VERSION=(.*)$/m)?.[1]
+)
+
+function testUpdateRepairsMissingHookAtSameVersion() {
+  const { env, run } = prepareUpdateEnv(STUB_LATEST_VERSION, OLD_CLI_PY_FILES)
+  unlinkSync(join(env.hooksDir, 'cst_session_stop.py'))
+
+  const result = run()
+  assertOk('update exits 0 when repairing', result.status === 0)
+  assertOk('update reports the missing file', result.stdout.includes('cst_session_stop.py'))
+  assertOk('update does not claim up to date while broken', !result.stdout.includes('Already up to date'))
+  assertOk('update restores the missing hook', existsSync(join(env.hooksDir, 'cst_session_stop.py')))
+}
+
+function testUpdateSkipsWhenNothingToDo() {
+  const { env, run } = prepareUpdateEnv(STUB_LATEST_VERSION, OLD_CLI_PY_FILES)
+
+  const result = run()
+  assertOk('update reports up to date when complete', result.stdout.includes('Already up to date'))
+  assertOk('update leaves hooks untouched when complete', readFileSync(join(env.hooksDir, 'cst_session_stop.py'), 'utf-8') === '# stub\n')
+}
+
+function testUpdateCopiesEveryPackagedHookFile() {
+  const futureModule = 'cst_future_module.py'
+  const { env, run } = prepareUpdateEnv(STUB_OLDER_VERSION, [...OLD_CLI_PY_FILES, futureModule], (packageHooksDir) => {
+    writeFileSync(join(packageHooksDir, 'unrelated.py'), '# not a hook\n')
+    symlinkSync(join(tmpdir(), 'cst-no-such-target'), join(packageHooksDir, 'cst_link.py'))
+  })
+
+  const result = run()
+  assertOk('update exits 0', result.status === 0)
+  assertOk('update copies a module the running CLI does not know', existsSync(join(env.hooksDir, futureModule)))
+  assertOk('update skips files outside the hook pattern', !existsSync(join(env.hooksDir, 'unrelated.py')))
+  assertOk('update skips symlinks in the package', !existsSync(join(env.hooksDir, 'cst_link.py')))
+  assertOk('update bumps CST_VERSION', readInstalledVersion(env.hooksDir) === STUB_LATEST_VERSION)
+}
+
+function testUpdateFailsOnPackageWithoutHooks() {
+  const { env, run } = prepareUpdateEnv(STUB_OLDER_VERSION, [])
+
+  const result = run()
+  assertOk('update fails when the package has no hook files', result.status !== 0)
+  assertOk('failed update keeps CST_VERSION', readInstalledVersion(env.hooksDir) === STUB_OLDER_VERSION)
+}
+
 function testInstalledHooksImportCleanly() {
   const env = createTestEnv()
   // 실제 설치 플로우로 temp HOME에 설치한 뒤 "설치된 디렉터리"에서 import를 검증한다.
@@ -1223,6 +1321,10 @@ testExistingCommandsStillWork()
 console.log('\n[regression]')
 testInstalledHooksImportCleanly()
 testHooksRunWithOldCliFileSet()
+testUpdateRepairsMissingHookAtSameVersion()
+testUpdateSkipsWhenNothingToDo()
+testUpdateCopiesEveryPackagedHookFile()
+testUpdateFailsOnPackageWithoutHooks()
 testResumeReusesItemViaSourceField()
 testStartupSourceIgnoresLegacyMarker()
 testTaskNotificationPromptSkipped()

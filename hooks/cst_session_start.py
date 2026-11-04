@@ -64,7 +64,7 @@ def main() -> int:
             current = os.environ.get("CST_VERSION", "unknown")
             print(
                 f"Update available: {current} → {latest}. "
-                f"Run: npx claude-session-tracker update"
+                f"Run: npx claude-session-tracker@latest update"
             )
     except Exception:
         pass
