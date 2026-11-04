@@ -35,6 +35,12 @@ def main() -> int:
         logger.error(f"stdin JSON 파싱 실패: {e}")
         return 0
 
+    # Hook input is external JSON: validate the payload shape at the boundary
+    # instead of assuming it, so malformed payloads are skipped, not crashed on.
+    if not isinstance(input_data, dict):
+        logger.error("stdin JSON is not an object, skipping")
+        return 0
+
     # AskUserQuestion 도구만 처리
     if input_data.get("tool_name") != "AskUserQuestion":
         return 0
@@ -59,21 +65,33 @@ def main() -> int:
         return 0
 
     # tool_response에서 선택값 추출
-    tool_response = input_data.get("tool_response", {})
-    answers = tool_response.get("answers", {})
-    if not answers:
+    tool_response = input_data.get("tool_response")
+    answers = tool_response.get("answers", {}) if isinstance(tool_response, dict) else {}
+    if not isinstance(answers, dict) or not answers:
         return 0
 
     # 질문 목록 (tool_input에서)
-    questions = input_data.get("tool_input", {}).get("questions", [])
-    question_map = {q["question"]: q for q in questions}
+    tool_input = input_data.get("tool_input")
+    questions = tool_input.get("questions", []) if isinstance(tool_input, dict) else []
+    if not isinstance(questions, list):
+        questions = []
+    question_map = {
+        q["question"]: q
+        for q in questions
+        if isinstance(q, dict) and isinstance(q.get("question"), str)
+    }
 
     lines = []
     for question, answer in answers.items():
         q_info = question_map.get(question, {})
         # 선택한 옵션의 description 찾기
         description = ""
-        for opt in q_info.get("options", []):
+        options = q_info.get("options", []) if isinstance(q_info, dict) else []
+        if not isinstance(options, list):
+            options = []
+        for opt in options:
+            if not isinstance(opt, dict):
+                continue
             if opt.get("label") == answer:
                 description = opt.get("description", "")
                 break
