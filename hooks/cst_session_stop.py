@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from cst_github_utils import (
+    GENESIS_HASH,
     _comment_labels,
     _last_active_field_id,
     add_issue_comment,
@@ -27,8 +28,8 @@ from cst_github_utils import (
     set_item_date_field,
     set_item_status,
     setup_logger,
+    stamp_comment,
 )
-from cst_hash_chain import GENESIS_HASH, stamp_comment
 
 logger = setup_logger("session-stop")
 

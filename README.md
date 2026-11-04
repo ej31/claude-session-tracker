@@ -233,7 +233,7 @@ The original data is never deleted. Archived repositories become read-only and c
 When a new version is published, the tracker shows a notification at the start of your next session. Update hook scripts in-place without re-running the full installer —
 
 ```bash
-claude-session-tracker update
+npx claude-session-tracker@latest update
 ```
 
 ---

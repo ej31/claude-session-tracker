@@ -50,7 +50,6 @@ const AUTO_SETUP_STEPS = [
 ]
 const PY_FILES = [
   'cst_github_utils.py',
-  'cst_hash_chain.py',
   'cst_session_start.py',
   'cst_prompt_to_github_projects.py',
   'cst_session_stop.py',
@@ -65,7 +64,11 @@ const LEGACY_PY_FILES = [
   'session_stop.py',
   'mark_done.py',
   'post_tool_use.py',
+  // 2.9.7 까지 별도 파일이었다. cst_github_utils.py 로 합쳐졌고 uninstall 이 잔여 파일을 지우도록 남긴다
+  'cst_hash_chain.py',
 ]
+// 패키지에서 hook 으로 복사할 파일명. 경로가 섞인 이름은 받지 않는다
+const HOOK_FILE_PATTERN = /^cst_[a-z0-9_]+\.py$/
 const ALL_KNOWN_FILES = [...PY_FILES, ...LEGACY_PY_FILES]
 const OUR_HOOK_KEYS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionEnd']
 const STATUS_LABELS = {
@@ -464,9 +467,13 @@ function collectHookRegistrations(cwd = process.cwd()) {
   })
 }
 
+function findMissingHookFiles() {
+  return PY_FILES.filter(file => !existsSync(join(HOOKS_DIR, file)))
+}
+
 function getInstallState(cwd = process.cwd()) {
   const config = readEnvFile(CONFIG_FILE)
-  const hookFilesPresent = PY_FILES.every(file => existsSync(join(HOOKS_DIR, file)))
+  const hookFilesPresent = findMissingHookFiles().length === 0
   const hookRegistrations = collectHookRegistrations(cwd)
   const installedTargets = hookRegistrations.filter(target => target.installed)
   const anyInstalledSignal = Boolean(config) || hookFilesPresent || hookRegistrations.some(target => target.exists)
@@ -1392,7 +1399,17 @@ function runResume() {
 }
 
 
-async function runUpdate() {
+// 복사 대상은 실행 중인 CLI 의 PY_FILES 가 아니라 받은 패키지에 실제로 든 파일이다.
+// PY_FILES 로 고르면 구버전 CLI 가 새 버전에서 추가된 모듈을 빼먹고 CST_VERSION 만 올린다.
+// 심볼릭 링크는 isFile() 이 false 라서 걸러진다.
+function listPackagedHookFiles(packageHooksDir) {
+  if (!existsSync(packageHooksDir)) return []
+  return readdirSync(packageHooksDir, { withFileTypes: true })
+    .filter(entry => entry.isFile() && HOOK_FILE_PATTERN.test(entry.name))
+    .map(entry => entry.name)
+}
+
+async function runUpdate(flags = {}) {
   const config = readEnvFile(CONFIG_FILE)
   if (!config) {
     console.error('No installation found. Run `npx claude-session-tracker` first.')
@@ -1438,15 +1455,22 @@ async function runUpdate() {
   // 현재 버전을 알 수 없으면 (레거시 설치) 항상 업데이트 제안
   const isNewer = !/^\d+\.\d+\.\d+$/.test(currentVersion) || compareSemver(latestVersion, currentVersion) > 0
 
-  if (!isNewer) {
+  // 버전이 같아도 hook 파일이 빠져 있으면 복구한다.
+  // 구버전 CLI 의 update 는 파일을 빠뜨린 채 CST_VERSION 을 올릴 수 있어서 버전만 보면 복구 경로가 막힌다.
+  const missingFiles = findMissingHookFiles()
+  const needsRepair = missingFiles.length > 0
+
+  if (!isNewer && !needsRepair) {
     spin.stop(`Already up to date (v${currentVersion}).`)
     return
   }
 
-  spin.stop(`Update available: ${currentVersion} → ${latestVersion}`)
+  spin.stop(isNewer
+    ? `Update available: ${currentVersion} → ${latestVersion}`
+    : `Missing hook files: ${missingFiles.join(', ')}`)
 
-  const confirm = await p.confirm({
-    message: `Update to v${latestVersion}?`,
+  const confirm = isNonInteractive(flags) || await p.confirm({
+    message: isNewer ? `Update to v${latestVersion}?` : `Repair hook files from v${latestVersion}?`,
   })
   if (p.isCancel(confirm) || !confirm) {
     p.log.info('Update cancelled.')
@@ -1503,18 +1527,19 @@ async function runUpdate() {
       throw new Error('Unexpected package structure after extraction')
     }
 
+    const packageHooksDir = join(packageDir, 'hooks')
+    const filesToUpdate = listPackagedHookFiles(packageHooksDir)
+    if (filesToUpdate.length === 0) {
+      throw new Error('Downloaded package contains no hook files')
+    }
+
     // hook 파일을 스테이징 디렉토리에 먼저 복사 (원자적 업데이트)
     const stagingDir = join(tmpDir, 'staging')
     mkdirSync(stagingDir, { recursive: true })
-    const filesToUpdate = []
-    for (const file of PY_FILES) {
-      const src = join(packageDir, 'hooks', file)
-      if (existsSync(src)) {
-        const stagingPath = join(stagingDir, file)
-        copyFileSync(src, stagingPath)
-        chmodSync(stagingPath, 0o755)
-        filesToUpdate.push(file)
-      }
+    for (const file of filesToUpdate) {
+      const stagingPath = join(stagingDir, file)
+      copyFileSync(join(packageHooksDir, file), stagingPath)
+      chmodSync(stagingPath, 0o755)
     }
 
     // 모든 파일이 준비되면 한꺼번에 이동
@@ -2420,7 +2445,7 @@ async function main() {
   }
 
   if (command === 'update') {
-    await runUpdate()
+    await runUpdate(flags)
     return
   }
 
