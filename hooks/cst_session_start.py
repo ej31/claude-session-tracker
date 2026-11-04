@@ -16,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from cst_github_utils import (
+    GENESIS_HASH,
     _created_field_id,
     _notes_repo,
     _project_name_mode,
@@ -37,7 +38,6 @@ from cst_github_utils import (
     set_item_status,
     setup_logger,
 )
-from cst_hash_chain import GENESIS_HASH
 
 logger = setup_logger("session-start")
 

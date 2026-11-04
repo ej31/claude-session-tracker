@@ -50,7 +50,6 @@ const AUTO_SETUP_STEPS = [
 ]
 const PY_FILES = [
   'cst_github_utils.py',
-  'cst_hash_chain.py',
   'cst_session_start.py',
   'cst_prompt_to_github_projects.py',
   'cst_session_stop.py',
@@ -65,6 +64,8 @@ const LEGACY_PY_FILES = [
   'session_stop.py',
   'mark_done.py',
   'post_tool_use.py',
+  // 2.9.7 까지 별도 파일이었다. cst_github_utils.py 로 합쳐졌고 uninstall 이 잔여 파일을 지우도록 남긴다
+  'cst_hash_chain.py',
 ]
 const ALL_KNOWN_FILES = [...PY_FILES, ...LEGACY_PY_FILES]
 const OUR_HOOK_KEYS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionEnd']

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -10,6 +10,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = join(__dirname, '..')
 const cliPath = join(repoRoot, 'bin', 'index.mjs')
 const sessionStartPath = join(repoRoot, 'hooks', 'cst_session_start.py')
+// v2.9.6, 2.9.7-beta.* CLI 의 PY_FILES 목록이다. 이미 배포되어 고칠 수 없는 update 가 복사하는 파일 전부다.
+const OLD_CLI_PY_FILES = [
+  'cst_github_utils.py',
+  'cst_session_start.py',
+  'cst_prompt_to_github_projects.py',
+  'cst_session_stop.py',
+  'cst_mark_done.py',
+  'cst_post_tool_use.py',
+  'cst_session_end.py',
+]
 
 let pass = 0
 let fail = 0
@@ -357,7 +367,6 @@ function writeTrackerInstall({ home, hooksDir, workspace, notesRepo = 'tester/pr
 
   for (const file of [
     'cst_github_utils.py',
-    'cst_hash_chain.py',
     'cst_session_start.py',
     'cst_prompt_to_github_projects.py',
     'cst_session_stop.py',
@@ -980,6 +989,27 @@ function testExistingCommandsStillWork() {
   assertOk('doctor command still works with parseArgs', doctorResult.status === 0 || doctorResult.status === 1)
 }
 
+function hookImportsCleanly({ hooksDir, home }, file) {
+  const mod = file.replace(/\.py$/, '')
+  const result = spawnSync('python3', [
+    '-c',
+    `import sys; sys.path.insert(0, ${JSON.stringify(hooksDir)}); import ${mod}`,
+  ], { encoding: 'utf-8', env: { ...process.env, HOME: home } })
+  return result.status === 0 && !result.stderr.includes('ModuleNotFoundError')
+}
+
+function testHooksRunWithOldCliFileSet() {
+  const env = createTestEnv()
+  // 구버전 CLI 의 update 는 새 패키지에서도 자신이 아는 파일만 복사한다.
+  // 그 파일들만으로 hook 이 동작해야 해당 사용자가 ModuleNotFoundError 를 겪지 않는다.
+  for (const file of OLD_CLI_PY_FILES) {
+    copyFileSync(join(repoRoot, 'hooks', file), join(env.hooksDir, file))
+  }
+  for (const file of OLD_CLI_PY_FILES) {
+    assertOk(`${file} imports with old CLI file set`, hookImportsCleanly(env, file))
+  }
+}
+
 function testInstalledHooksImportCleanly() {
   const env = createTestEnv()
   // 실제 설치 플로우로 temp HOME에 설치한 뒤 "설치된 디렉터리"에서 import를 검증한다.
@@ -990,24 +1020,13 @@ function testInstalledHooksImportCleanly() {
     extraEnv: { GITHUB_TOKEN: 'ghp_test_token' },
   })
   assertOk('setup completes for install-path test', install.status === 0)
-  assertOk('installer ships cst_hash_chain.py', existsSync(join(env.hooksDir, 'cst_hash_chain.py')))
 
-  for (const file of [
-    'cst_github_utils.py',
-    'cst_hash_chain.py',
-    'cst_session_start.py',
-    'cst_prompt_to_github_projects.py',
-    'cst_session_stop.py',
-    'cst_mark_done.py',
-    'cst_post_tool_use.py',
-    'cst_session_end.py',
-  ]) {
-    const mod = file.replace(/\.py$/, '')
-    const result = spawnSync('python3', [
-      '-c',
-      `import sys; sys.path.insert(0, ${JSON.stringify(env.hooksDir)}); import ${mod}`,
-    ], { encoding: 'utf-8', env: { ...process.env, HOME: env.home } })
-    assertOk(`installed ${file} imports cleanly`, result.status === 0 && !result.stderr.includes('ModuleNotFoundError'))
+  // 수기 목록을 쓰면 PY_FILES 누락이 그대로 재발하므로 리포의 hooks/ 를 기준으로 검사한다.
+  const shippedHookFiles = readdirSync(join(repoRoot, 'hooks')).filter(file => /^cst_.*\.py$/.test(file))
+  assertOk('repo ships hook files', shippedHookFiles.length > 0)
+  for (const file of shippedHookFiles) {
+    assertOk(`installer ships ${file}`, existsSync(join(env.hooksDir, file)))
+    assertOk(`installed ${file} imports cleanly`, hookImportsCleanly(env, file))
   }
 
   const run = runPythonHook({
@@ -1203,6 +1222,7 @@ testExistingCommandsStillWork()
 
 console.log('\n[regression]')
 testInstalledHooksImportCleanly()
+testHooksRunWithOldCliFileSet()
 testResumeReusesItemViaSourceField()
 testStartupSourceIgnoresLegacyMarker()
 testTaskNotificationPromptSkipped()

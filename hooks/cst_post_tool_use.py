@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from cst_github_utils import (
+    GENESIS_HASH,
     add_issue_comment,
     check_project_board_status,
     is_tracking_paused,
@@ -19,8 +20,8 @@ from cst_github_utils import (
     load_state,
     save_state,
     setup_logger,
+    stamp_comment,
 )
-from cst_hash_chain import GENESIS_HASH, stamp_comment
 
 logger = setup_logger("post-tool-use")
 
